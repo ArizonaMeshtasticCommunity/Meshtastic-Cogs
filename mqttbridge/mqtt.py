@@ -207,18 +207,6 @@ class MqttBridge(commands.Cog):
         """This runs when the cog is loaded/reloaded."""
         asyncio.create_task(self.initialize())
 
-        core_info = self.bot.get_command("info") # Remove this before GitHub, probably needs to be it's own cog...
-        if core_info:
-            self.bot.remove_command("info")
-
-        contact_command = self.bot.get_command("contact") # Remove this before GitHub, probably needs to be it's own cog...
-        if contact_command:
-            self.bot.remove_command("contact")
-
-        embedset_command = self.bot.get_command("embedset") # Remove this before GitHub, probably needs to be it's own cog...
-        if embedset_command:
-            self.bot.remove_command("embedset")
-
     async def cog_unload(self):
         """Cleanup when the cog is unloaded"""
         if self.mqtt_client and self.connected:
