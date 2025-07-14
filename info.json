@@ -1,0 +1,13 @@
+{
+    "author" : [
+        "Skordy"
+    ],
+    "description" : "Meshtastic and MQTT based cogs for Red-Discord Bot developed by and used in the Arizona Meshtastic Community Discord ",
+    "install_msg" : "If there are any issues, or feature requests, submit an issue on the repo.",
+    "name" : "Meshtastic-Cogs",
+    "short" : "Meshtastic Cogs",
+    "tags" : [
+        "utility"
+    ],
+    "type" : "COG"
+}
