@@ -551,32 +551,41 @@ class MqttBridge(commands.Cog):
             return True  # Assume it's a new node if we can't check
     
     async def save_node_info(self, node_id, node_data):
-        """Save node information to the database"""
+        """Save node information to the database, only updating changed fields"""
         try:
             with self.get_db() as conn:
                 c = conn.cursor()
-    
-                # Use INSERT OR REPLACE to update existing or insert new
-                c.execute("""
-                    INSERT OR REPLACE INTO nodes (
+
+                # Filter out None values and always include last_seen
+                clean_data = {k: v for k, v in node_data.items() if v is not None}
+                clean_data['last_seen'] = node_data.get('last_seen', datetime.now().isoformat())
+
+                # Build update clauses for non-null fields
+                update_clauses = [f"{field} = excluded.{field}" for field in clean_data.keys()]
+
+                # Use INSERT ON CONFLICT to handle both insert and selective update
+                c.execute(f"""
+                    INSERT INTO nodes (
                         node_id, node_num, node_id_hex, short_name, long_name,
                         hw_model, role, channel, public_key, last_seen
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(node_id) DO UPDATE SET
+                        {', '.join(update_clauses)}
                 """, (
                     node_id,
-                    node_data.get("nodeNum", 0),
-                    node_data.get("nodeId", ""),
-                    node_data.get("shortName", ""),
-                    node_data.get("longName", ""),
-                    node_data.get("hw_model", ""),
-                    node_data.get("role", ""),
-                    node_data.get("channel", ""),
-                    node_data.get("public_key"),
-                    node_data.get("last_seen", datetime.now().isoformat())
+                    clean_data.get('nodeNum', 0),
+                    clean_data.get('nodeId', ''),
+                    clean_data.get('shortName', ''),
+                    clean_data.get('longName', ''),
+                    clean_data.get('hw_model', ''),
+                    clean_data.get('role', ''),
+                    clean_data.get('channel', ''),
+                    clean_data.get('public_key'),
+                    clean_data.get('last_seen')
                 ))
-    
+
                 conn.commit()
-            
+
         except Exception as e:
             print(f"Error saving node to database: {str(e)}")
 
@@ -752,25 +761,34 @@ class MqttBridge(commands.Cog):
                     c.execute("UPDATE nodes SET last_seen = ? WHERE node_id = ?", 
                             (datetime.now().isoformat(), node_id))
 
+                    # Filter out None values and always include timestamp
+                    clean_data = {k: v for k, v in telemetry_data.items() if v is not None}
+                    clean_data['timestamp'] = telemetry_data.get('timestamp', datetime.now().isoformat())
+
+                    # Build update clauses for non-null fields
+                    update_clauses = [f"{field} = excluded.{field}" for field in clean_data.keys()]
+
                     # Create or update nodes telemetry
-                    c.execute("""
-                        INSERT OR REPLACE INTO node_telemetry (
+                    c.execute(f"""
+                        INSERT INTO node_telemetry (
                             node_id, timestamp, battery_level, voltage, 
                             temperature, humidity, pressure, 
                             channel_utilization, air_util_tx, gas_resistance, uptime_seconds
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(node_id) DO UPDATE SET
+                            {', '.join(update_clauses)}
                     """, (
                         node_id,
-                        telemetry_data.get("timestamp", datetime.now().isoformat()),
-                        telemetry_data.get("battery_level"),
-                        telemetry_data.get("voltage"),
-                        telemetry_data.get("temperature"),
-                        telemetry_data.get("humidity"),
-                        telemetry_data.get("pressure"),
-                        telemetry_data.get("channel_utilization"),
-                        telemetry_data.get("air_util_tx"),
-                        telemetry_data.get("gas_resistance"),
-                        telemetry_data.get("uptime_seconds")
+                        clean_data.get('timestamp'),
+                        clean_data.get('battery_level'),
+                        clean_data.get('voltage'),
+                        clean_data.get('temperature'),
+                        clean_data.get('humidity'),
+                        clean_data.get('pressure'),
+                        clean_data.get('channel_utilization'),
+                        clean_data.get('air_util_tx'),
+                        clean_data.get('gas_resistance'),
+                        clean_data.get('uptime_seconds')
                     ))
 
                 conn.commit()
@@ -821,20 +839,29 @@ class MqttBridge(commands.Cog):
                     c.execute("UPDATE nodes SET last_seen = ? WHERE node_id = ?", 
                             (datetime.now().isoformat(), node_id))
 
-                    # Create or update nodes position
-                    c.execute("""
-                        INSERT OR REPLACE INTO node_positions (
+                    # Filter out None values and always include timestamp
+                    clean_data = {k: v for k, v in position_data.items() if v is not None}
+                    clean_data['timestamp'] = position_data.get('timestamp', datetime.now().isoformat())
+
+                    # Build update clauses for non-null fields
+                    update_clauses = [f"{field} = excluded.{field}" for field in clean_data.keys()]
+
+                    # Use INSERT ON CONFLICT to handle both insert and selective update
+                    c.execute(f"""
+                        INSERT INTO node_positions (
                             node_id, timestamp, latitude, longitude, altitude
                         ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(node_id) DO UPDATE SET
+                            {', '.join(update_clauses)}
                     """, (
                         node_id,
-                        position_data.get("timestamp", datetime.now().isoformat()),
-                        position_data.get("latitude"),
-                        position_data.get("longitude"),
-                        position_data.get("altitude")
+                        clean_data.get('timestamp'),
+                        clean_data.get('latitude'),
+                        clean_data.get('longitude'),
+                        clean_data.get('altitude')
                     ))
 
-                conn.commit()
+                    conn.commit()
 
         except Exception as e:
             print(f"Error updating node position: {str(e)}")
@@ -2446,74 +2473,128 @@ class MqttBridge(commands.Cog):
 
     @node_admin.command(name="roles")
     @commands.admin_or_permissions(administrator=True)
-    async def nodes_by_role(self, ctx: commands.Context, role: str = None):
-        """List nodes grouped by role or nodes with a specific role
-    
-        If no role is specified, shows all roles with their nodes.
-        """
+    async def nodes_by_role(self, ctx: commands.Context, role: str = None, channel: str = None):
+        """List nodes grouped by role or nodes with a specific role, optionally filtered by channel"""
         try:
             with self.get_db() as conn:
                 c = conn.cursor()
-
+                
+                # Build base query with common filters
+                base_where = ["role IS NOT NULL AND role != ''"]
+                params = []
+                
+                if channel:
+                    base_where.append("LOWER(channel) = LOWER(?)")
+                    params.append(channel)
+                
                 if role:
-                    # If a specific role was requested, get nodes with that role
-                    c.execute("""
+                    # Single role query - much simpler
+                    base_where.append("LOWER(role) = LOWER(?)")
+                    params.append(role)
+                    
+                    query = f"""
                         SELECT node_id_hex, long_name, short_name, last_seen, channel
                         FROM nodes
-                        WHERE LOWER(role) = LOWER(?)
+                        WHERE {' AND '.join(base_where)}
                         ORDER BY long_name
-                    """, (role,))
-
+                    """
+                    
+                    c.execute(query, params)
                     nodes = c.fetchall()
-
+                    
                     if not nodes:
-                        await ctx.send(f"No nodes found with role '{role}'.")
+                        filter_text = f"role '{role}'"
+                        if channel:
+                            filter_text += f" on channel '{channel}'"
+                        await ctx.send(f"No nodes found with {filter_text}.")
                         return
-
-                    # Create pages for this specific role
-                    title = f"Nodes with Role: {role}"
+                    
+                    title = f"Nodes with Role: {role} ({len(nodes)})"
+                    if channel:
+                        title += f" (Channel: {channel})"
                     pages = self.create_node_pages(nodes, title)
-
+                    
                 else:
-                    # Get all roles and their counts
-                    c.execute("""
-                        SELECT role, COUNT(*) as count 
-                        FROM nodes 
-                        WHERE role IS NOT NULL AND role != ''
-                        GROUP BY role 
-                        ORDER BY count DESC
-                    """)
-
-                    roles = c.fetchall()
-
-                    if not roles:
-                        await ctx.send("No roles found in the database.")
+                    # Multi-role overview - single query approach
+                    query = f"""
+                        SELECT role, node_id_hex, long_name, short_name, last_seen, channel
+                        FROM nodes
+                        WHERE {' AND '.join(base_where)}
+                        ORDER BY role, long_name
+                    """
+                    
+                    c.execute(query, params)
+                    all_nodes = c.fetchall()
+                    
+                    if not all_nodes:
+                        filter_text = "No roles found"
+                        if channel:
+                            filter_text += f" on channel '{channel}'"
+                        await ctx.send(f"{filter_text}.")
                         return
-
+                    
+                    # Group nodes by role
+                    from collections import defaultdict
+                    nodes_by_role = defaultdict(list)
+                    
+                    for role_name, node_id_hex, long_name, short_name, last_seen, node_channel in all_nodes:
+                        nodes_by_role[role_name].append((node_id_hex, long_name, short_name, last_seen, node_channel))
+                    
+                    # Create pages for each role
                     pages = []
-
-                    # Create a page for each role
-                    for role_name, count in roles:
-                        # Get nodes with this role
-                        c.execute("""
-                            SELECT node_id_hex, long_name, short_name, last_seen, channel
-                            FROM nodes
-                            WHERE role = ?
-                            ORDER BY long_name
-                        """, (role_name,))
-
-                        nodes = c.fetchall()
-
-                        if nodes:
-                            title = f"Nodes with Role: {role_name} ({count})"
-                            role_pages = self.create_node_pages(nodes, title)
-                            pages.extend(role_pages)
-            
-            # Display the paged menu using the standard Red menu system
-            if pages:
-                await menu(ctx, pages, DEFAULT_CONTROLS)
-            else:
-                await ctx.send("No nodes found.")
-    
+                    for role_name, nodes in nodes_by_role.items():
+                        title = f"Nodes with Role: {role_name} ({len(nodes)})"
+                        if channel:
+                            title += f" (Channel: {channel})"
+                        role_pages = self.create_node_pages(nodes, title)
+                        pages.extend(role_pages)
+                
+                # Display results
+                if pages:
+                    await menu(ctx, pages, DEFAULT_CONTROLS)
+                else:
+                    await ctx.send("No nodes found with the specified filters.")
+                    
         except Exception as e:
             await ctx.send(f"Error listing nodes by role: {str(e)}")
+
+    @node_admin.command(name="channels")
+    @commands.admin_or_permissions(administrator=True)
+    async def list_channels(self, ctx: commands.Context):
+        """List all channels that nodes have been seen on"""
+        try:
+            with self.get_db() as conn:
+                c = conn.cursor()
+    
+                c.execute("""
+                    SELECT channel, COUNT(*) as node_count
+                    FROM nodes
+                    WHERE channel IS NOT NULL AND channel != ''
+                    GROUP BY channel
+                    ORDER BY node_count DESC
+                """)
+    
+                channels = c.fetchall()
+    
+                if not channels:
+                    await ctx.send("No channels found in the database.")
+                    return
+    
+                embed = discord.Embed(
+                    title="Meshtastic Channels",
+                    description="Channels where nodes have been discovered",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.now()
+                )
+    
+                for channel_name, count in channels:
+                    embed.add_field(
+                        name=channel_name,
+                        value=f"{count} nodes",
+                        inline=True
+                    )
+    
+                await ctx.send(embed=embed)
+    
+        except Exception as e:
+            await ctx.send(f"Error listing channels: {str(e)}")
