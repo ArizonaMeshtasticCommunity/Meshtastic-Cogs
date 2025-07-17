@@ -551,41 +551,32 @@ class MqttBridge(commands.Cog):
             return True  # Assume it's a new node if we can't check
     
     async def save_node_info(self, node_id, node_data):
-        """Save node information to the database, only updating changed fields"""
+        """Save node information to the database"""
         try:
             with self.get_db() as conn:
                 c = conn.cursor()
-
-                # Filter out None values and always include last_seen
-                clean_data = {k: v for k, v in node_data.items() if v is not None}
-                clean_data['last_seen'] = node_data.get('last_seen', datetime.now().isoformat())
-
-                # Build update clauses for non-null fields
-                update_clauses = [f"{field} = excluded.{field}" for field in clean_data.keys()]
-
-                # Use INSERT ON CONFLICT to handle both insert and selective update
-                c.execute(f"""
-                    INSERT INTO nodes (
+    
+                # Use INSERT OR REPLACE to update existing or insert new
+                c.execute("""
+                    INSERT OR REPLACE INTO nodes (
                         node_id, node_num, node_id_hex, short_name, long_name,
                         hw_model, role, channel, public_key, last_seen
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(node_id) DO UPDATE SET
-                        {', '.join(update_clauses)}
                 """, (
                     node_id,
-                    clean_data.get('nodeNum', 0),
-                    clean_data.get('nodeId', ''),
-                    clean_data.get('shortName', ''),
-                    clean_data.get('longName', ''),
-                    clean_data.get('hw_model', ''),
-                    clean_data.get('role', ''),
-                    clean_data.get('channel', ''),
-                    clean_data.get('public_key'),
-                    clean_data.get('last_seen')
+                    node_data.get("nodeNum", 0),
+                    node_data.get("nodeId", ""),
+                    node_data.get("shortName", ""),
+                    node_data.get("longName", ""),
+                    node_data.get("hw_model", ""),
+                    node_data.get("role", ""),
+                    node_data.get("channel", ""),
+                    node_data.get("public_key"),
+                    node_data.get("last_seen", datetime.now().isoformat())
                 ))
-
+    
                 conn.commit()
-
+            
         except Exception as e:
             print(f"Error saving node to database: {str(e)}")
 
@@ -761,34 +752,25 @@ class MqttBridge(commands.Cog):
                     c.execute("UPDATE nodes SET last_seen = ? WHERE node_id = ?", 
                             (datetime.now().isoformat(), node_id))
 
-                    # Filter out None values and always include timestamp
-                    clean_data = {k: v for k, v in telemetry_data.items() if v is not None}
-                    clean_data['timestamp'] = telemetry_data.get('timestamp', datetime.now().isoformat())
-
-                    # Build update clauses for non-null fields
-                    update_clauses = [f"{field} = excluded.{field}" for field in clean_data.keys()]
-
                     # Create or update nodes telemetry
-                    c.execute(f"""
-                        INSERT INTO node_telemetry (
+                    c.execute("""
+                        INSERT OR REPLACE INTO node_telemetry (
                             node_id, timestamp, battery_level, voltage, 
                             temperature, humidity, pressure, 
                             channel_utilization, air_util_tx, gas_resistance, uptime_seconds
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(node_id) DO UPDATE SET
-                            {', '.join(update_clauses)}
                     """, (
                         node_id,
-                        clean_data.get('timestamp'),
-                        clean_data.get('battery_level'),
-                        clean_data.get('voltage'),
-                        clean_data.get('temperature'),
-                        clean_data.get('humidity'),
-                        clean_data.get('pressure'),
-                        clean_data.get('channel_utilization'),
-                        clean_data.get('air_util_tx'),
-                        clean_data.get('gas_resistance'),
-                        clean_data.get('uptime_seconds')
+                        telemetry_data.get("timestamp", datetime.now().isoformat()),
+                        telemetry_data.get("battery_level"),
+                        telemetry_data.get("voltage"),
+                        telemetry_data.get("temperature"),
+                        telemetry_data.get("humidity"),
+                        telemetry_data.get("pressure"),
+                        telemetry_data.get("channel_utilization"),
+                        telemetry_data.get("air_util_tx"),
+                        telemetry_data.get("gas_resistance"),
+                        telemetry_data.get("uptime_seconds")
                     ))
 
                 conn.commit()
@@ -839,29 +821,20 @@ class MqttBridge(commands.Cog):
                     c.execute("UPDATE nodes SET last_seen = ? WHERE node_id = ?", 
                             (datetime.now().isoformat(), node_id))
 
-                    # Filter out None values and always include timestamp
-                    clean_data = {k: v for k, v in position_data.items() if v is not None}
-                    clean_data['timestamp'] = position_data.get('timestamp', datetime.now().isoformat())
-
-                    # Build update clauses for non-null fields
-                    update_clauses = [f"{field} = excluded.{field}" for field in clean_data.keys()]
-
-                    # Use INSERT ON CONFLICT to handle both insert and selective update
-                    c.execute(f"""
-                        INSERT INTO node_positions (
+                    # Create or update nodes position
+                    c.execute("""
+                        INSERT OR REPLACE INTO node_positions (
                             node_id, timestamp, latitude, longitude, altitude
                         ) VALUES (?, ?, ?, ?, ?)
-                        ON CONFLICT(node_id) DO UPDATE SET
-                            {', '.join(update_clauses)}
                     """, (
                         node_id,
-                        clean_data.get('timestamp'),
-                        clean_data.get('latitude'),
-                        clean_data.get('longitude'),
-                        clean_data.get('altitude')
+                        position_data.get("timestamp", datetime.now().isoformat()),
+                        position_data.get("latitude"),
+                        position_data.get("longitude"),
+                        position_data.get("altitude")
                     ))
 
-                    conn.commit()
+                conn.commit()
 
         except Exception as e:
             print(f"Error updating node position: {str(e)}")
@@ -2565,7 +2538,7 @@ class MqttBridge(commands.Cog):
         try:
             with self.get_db() as conn:
                 c = conn.cursor()
-    
+
                 c.execute("""
                     SELECT channel, COUNT(*) as node_count
                     FROM nodes
@@ -2573,28 +2546,28 @@ class MqttBridge(commands.Cog):
                     GROUP BY channel
                     ORDER BY node_count DESC
                 """)
-    
+
                 channels = c.fetchall()
-    
+
                 if not channels:
                     await ctx.send("No channels found in the database.")
                     return
-    
+
                 embed = discord.Embed(
                     title="Meshtastic Channels",
                     description="Channels where nodes have been discovered",
                     color=discord.Color.blue(),
                     timestamp=datetime.now()
                 )
-    
+
                 for channel_name, count in channels:
                     embed.add_field(
                         name=channel_name,
                         value=f"{count} nodes",
                         inline=True
                     )
-    
+
                 await ctx.send(embed=embed)
-    
+
         except Exception as e:
             await ctx.send(f"Error listing channels: {str(e)}")
