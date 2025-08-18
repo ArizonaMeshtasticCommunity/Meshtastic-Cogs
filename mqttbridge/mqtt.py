@@ -440,10 +440,16 @@ class MqttBridge(commands.Cog):
 
             # Convert enum values to string representations
             hw_model = node_info.hw_model
-            hw_model_str = mesh_pb2.HardwareModel.Name(hw_model) if hasattr(mesh_pb2.HardwareModel, "Name") else "Unknown"
+            try:
+                hw_model_str = mesh_pb2.HardwareModel.Name(hw_model) if hasattr(mesh_pb2.HardwareModel, "Name") else "Unknown"
+            except ValueError:
+                hw_model_str = f"Unknown ({hw_model})"
         
             role = node_info.role
-            role_str = config_pb2.Config.DeviceConfig.Role.Name(role) if hasattr(config_pb2.Config.DeviceConfig.Role, "Name") else "Unknown"
+            try:
+                role_str = config_pb2.Config.DeviceConfig.Role.Name(role) if hasattr(config_pb2.Config.DeviceConfig.Role, "Name") else "Unknown"
+            except ValueError:
+                role_str = f"Unknown ({role})"
 
             # Handle public key if present
             public_key_base64 = None
@@ -932,7 +938,7 @@ class MqttBridge(commands.Cog):
 
                 # Create an embed with the traceroute information
                 embed = discord.Embed(
-                    title=f"Traceroute: {sender_info.get('long_name', 'Unknown')} → {receiver_info.get('long_name', 'Unknown')}",
+                    title=f"Traceroute: {sender_info.get('long_name', sender_info.get('node_id_hex', 'Unknown'))} → {receiver_info.get('long_name', receiver_info.get('node_id_hex', 'Unknown'))}",
                     description=f"Trace ID: {mp.id} | Direction: {trace_direction} on Channel: {channel}",
                     color=discord.Color.blue(),
                     timestamp=datetime.now()
