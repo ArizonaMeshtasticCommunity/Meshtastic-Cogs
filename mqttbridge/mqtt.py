@@ -41,6 +41,26 @@ class MqttBridge(commands.Cog):
             "metrics_domain": None,
             "enabled": False
         }
+
+        # Print Meshtastic library version on cog load
+        try:
+            # First try the __version__ attribute
+            version = getattr(meshtastic, '__version__', None)
+            if version is None:
+                # Use modern importlib.metadata instead of deprecated pkg_resources
+                try:
+                    from importlib.metadata import version as get_version
+                    version = get_version("meshtastic")
+                except ImportError:
+                    import importlib_metadata
+                    # Fallback for Python < 3.8
+                    from importlib_metadata import version as get_version
+                    version = get_version("meshtastic")
+            print(f"MQTT Bridge: Meshtastic Python library version: {version}")
+        except Exception as e:
+            print(f"MQTT Bridge: Meshtastic Python library version: Unable to determine ({str(e)})")
+
+
         
         self.config.register_global(**default_global)
         
@@ -212,6 +232,7 @@ class MqttBridge(commands.Cog):
         if self.mqtt_client and self.connected:
             self.mqtt_client.disconnect()
             self.connected = False
+            await self.bot.change_presence(activity=None)
         if self.mqtt_thread and self.mqtt_thread.is_alive():
             self.mqtt_thread.join(timeout=1)
 
@@ -268,8 +289,8 @@ class MqttBridge(commands.Cog):
             )
             
             # Start the MQTT loop in another thread
-            self.mqtt_thread = threading.Thread(target=self.mqtt_client.loop_start, daemon=True)
-            self.mqtt_thread.start()
+            # self.mqtt_thread = threading.Thread(target=self.mqtt_client.loop_start, daemon=True)
+            self.mqtt_client.loop_start()
 
             await self.bot.change_presence(activity=discord.Activity(
                 type=discord.ActivityType.listening, 
@@ -277,7 +298,7 @@ class MqttBridge(commands.Cog):
             ))
         except Exception as e:
             print(f"MQTT connection error: {e}")
-    
+
     async def stop_mqtt_client(self):
         """Stop the MQTT client"""
         if self.mqtt_client and self.connected:
@@ -293,21 +314,21 @@ class MqttBridge(commands.Cog):
             asyncio.run_coroutine_threadsafe(self.subscribe_to_topic(), self.bot.loop)
         else:
             print(f"Failed to connect to MQTT broker with code {rc}")
-    
+
     async def subscribe_to_topic(self):
         """Subscribe to the MQTT topic"""
         if self.connected:
             settings = await self.config.all()
             self.mqtt_client.subscribe(settings["mqtt_topic"])
             print(f"Subscribed to MQTT topic: {settings['mqtt_topic']}")
-    
+
     def on_message(self, client, userdata, msg):
         """Callback when message is received"""
         asyncio.run_coroutine_threadsafe(
             self.process_mqtt_message(msg),
             self.bot.loop
         )
-    
+
     async def process_mqtt_message(self, msg):
         """Process an MQTT message and forward to Discord"""
             
@@ -325,38 +346,13 @@ class MqttBridge(commands.Cog):
             print(f"Error parsing ServiceEnvelope: {str(e)}")
             return
         
+        # Decrypt if needed
+        decryption_success = True
         if mp.HasField("encrypted") and not mp.HasField("decoded"):
-            await self.decode_encrypted(mp, se, settings["DEFAULT_KEY"])
+            decryption_success = await self.decode_encrypted(mp, se, settings["DEFAULT_KEY"])
         
-    async def decode_encrypted(self, mp, se, key):
-        """Decrypt a meshtastic message."""
-
-        try:
-            if key == "AQ==":
-                settings = await self.config.all()
-                key = settings["DEFAULT_KEY"]
-
-            # Convert key to bytes
-            key_bytes = base64.b64decode(key.encode("ascii"))
-
-            nonce_packet_id = getattr(mp, "id").to_bytes(8, "little")
-            nonce_from_node = getattr(mp, "from").to_bytes(8, "little")
-
-            # Put both parts into a single byte array.
-            nonce = nonce_packet_id + nonce_from_node
-
-            cipher = Cipher(
-                algorithms.AES(key_bytes), modes.CTR(nonce), backend=default_backend()
-            )
-            decryptor = cipher.decryptor()
-            decrypted_bytes = (
-                decryptor.update(getattr(mp, "encrypted")) + decryptor.finalize()
-            )
-
-            data = mesh_pb2.Data()
-            data.ParseFromString(decrypted_bytes)
-            mp.decoded.CopyFrom(data)
-            
+        # Process the packet only if decryption succeeded (or wasn't needed) and it has decoded data
+        if decryption_success and mp.HasField("decoded"):
             if mp.decoded.portnum == portnums_pb2.TEXT_MESSAGE_APP:
                 # Check if this message is a duplicate before proceeding
                 is_duplicate = await self.is_duplicate_message(mp)
@@ -420,12 +416,44 @@ class MqttBridge(commands.Cog):
                 except Exception as e:
                     print(f"Error processing traceroute data: {str(e)}")
 
+    async def decode_encrypted(self, mp, se, key):
+        """Decrypt a meshtastic message."""
+
+        try:
+            if key == "AQ==":
+                settings = await self.config.all()
+                key = settings["DEFAULT_KEY"]
+
+            # Convert key to bytes
+            key_bytes = base64.b64decode(key.encode("ascii"))
+
+            nonce_packet_id = getattr(mp, "id").to_bytes(8, "little")
+            nonce_from_node = getattr(mp, "from").to_bytes(8, "little")
+
+            # Put both parts into a single byte array.
+            nonce = nonce_packet_id + nonce_from_node
+
+            cipher = Cipher(
+                algorithms.AES(key_bytes), modes.CTR(nonce), backend=default_backend()
+            )
+            decryptor = cipher.decryptor()
+            decrypted_bytes = (
+                decryptor.update(getattr(mp, "encrypted")) + decryptor.finalize()
+            )
+
+            data = mesh_pb2.Data()
+            data.ParseFromString(decrypted_bytes)
+            mp.decoded.CopyFrom(data)
+            
+            return True  # Decryption succeeded
+
         except Exception as e:
             if str(e) == "Error parsing message with type 'meshtastic.protobuf.Data'":
                 # Message is a DM, can't be decrypted, and we don't care about it
-                return
+                return False
             else:
                 print(f"*** Decryption failed: {str(e)}")
+                return False
 
     async def process_node_info(self, mp, se):
         """Process node information and save it to the database"""
@@ -531,10 +559,20 @@ class MqttBridge(commands.Cog):
                     )
                 embed.add_field(name="Links", value=f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_id})", inline=False)
 
-                note = f":warning: If this is your node, type `/node claim !{node_id_hex}` to mark yourself as the owner!"
+                note = f"Is `{node_info.long_name} (!{node_id_hex})` your node? Click `Claim This Node` below to claim!"
+                view = NodeClaimView(f"!{node_id_hex}", self)
 
                 if self.nodediscovery_channel:
-                    await self.nodediscovery_channel.send(note, embed=embed)
+                    view = NodeClaimView(f"!{node_id_hex}", self)
+                    message = await self.nodediscovery_channel.send(note, embed=embed, view=view)
+
+                    # Store the message reference in the view for later updates
+                    view.message = message
+
+                    # Track active views for this node
+                    if not hasattr(self, 'active_claim_views'):
+                        self.active_claim_views = {}
+                    self.active_claim_views[f"!{node_id_hex}"] = view
                 else:
                     return
             
@@ -555,7 +593,7 @@ class MqttBridge(commands.Cog):
         except Exception as e:
             print(f"Error checking if node is new: {str(e)}")
             return True  # Assume it's a new node if we can't check
-    
+
     async def save_node_info(self, node_id, node_data):
         """Save node information to the database"""
         try:
@@ -696,7 +734,7 @@ class MqttBridge(commands.Cog):
             print(f"Error formatting text message: {e}")
             import traceback
             print(traceback.format_exc())
-    
+
     async def process_telemetry(self, mp):
         """Process telemetry information and save it to the database"""
         try:
@@ -742,29 +780,61 @@ class MqttBridge(commands.Cog):
             
         except Exception as e:
             print(f"Error processing telemetry: {str(e)}")
-    
+
     async def update_node_telemetry(self, node_id, telemetry_data):
         """Update a node's telemetry information in the database"""
         try:
             with self.get_db() as conn:
                 c = conn.cursor()
-
+    
                 # Check if node exists in the database first
                 c.execute("SELECT node_id FROM nodes WHERE node_id = ?", (node_id,))
                 node_exists = c.fetchone()
-
+    
                 if node_exists:
                     # Update the node's last_seen timestamp
                     c.execute("UPDATE nodes SET last_seen = ? WHERE node_id = ?", 
                             (datetime.now().isoformat(), node_id))
-
-                    # Create or update nodes telemetry
-                    c.execute("""
-                        INSERT OR REPLACE INTO node_telemetry (
+    
+                    # Build update clauses only for fields that have data
+                    update_clauses = ["timestamp = excluded.timestamp"]  # Always update timestamp
+                    
+                    if telemetry_data.get("battery_level") is not None:
+                        update_clauses.append("battery_level = excluded.battery_level")
+                    
+                    if telemetry_data.get("voltage") is not None:
+                        update_clauses.append("voltage = excluded.voltage")
+                    
+                    if telemetry_data.get("temperature") is not None:
+                        update_clauses.append("temperature = excluded.temperature")
+                    
+                    if telemetry_data.get("humidity") is not None:
+                        update_clauses.append("humidity = excluded.humidity")
+                    
+                    if telemetry_data.get("pressure") is not None:
+                        update_clauses.append("pressure = excluded.pressure")
+                    
+                    if telemetry_data.get("channel_utilization") is not None:
+                        update_clauses.append("channel_utilization = excluded.channel_utilization")
+                    
+                    if telemetry_data.get("air_util_tx") is not None:
+                        update_clauses.append("air_util_tx = excluded.air_util_tx")
+                    
+                    if telemetry_data.get("gas_resistance") is not None:
+                        update_clauses.append("gas_resistance = excluded.gas_resistance")
+                    
+                    if telemetry_data.get("uptime_seconds") is not None:
+                        update_clauses.append("uptime_seconds = excluded.uptime_seconds")
+    
+                    # Use INSERT ON CONFLICT to handle both insert and selective update
+                    c.execute(f"""
+                        INSERT INTO node_telemetry (
                             node_id, timestamp, battery_level, voltage, 
                             temperature, humidity, pressure, 
                             channel_utilization, air_util_tx, gas_resistance, uptime_seconds
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(node_id) DO UPDATE SET
+                            {', '.join(update_clauses)}
                     """, (
                         node_id,
                         telemetry_data.get("timestamp", datetime.now().isoformat()),
@@ -778,9 +848,9 @@ class MqttBridge(commands.Cog):
                         telemetry_data.get("gas_resistance"),
                         telemetry_data.get("uptime_seconds")
                     ))
-
-                conn.commit()
-
+    
+                    conn.commit()
+    
         except Exception as e:
             print(f"Error updating node telemetry: {str(e)}")
 
@@ -938,7 +1008,7 @@ class MqttBridge(commands.Cog):
 
                 # Create an embed with the traceroute information
                 embed = discord.Embed(
-                    title=f"Traceroute: {sender_info.get('long_name', sender_info.get('node_id_hex', 'Unknown'))} → {receiver_info.get('long_name', receiver_info.get('node_id_hex', 'Unknown'))}",
+                    title=f"Traceroute: {sender_info.get('long_name', 'Unknown')} → {receiver_info.get('long_name', 'Unknown')}",
                     description=f"Trace ID: {mp.id} | Direction: {trace_direction} on Channel: {channel}",
                     color=discord.Color.blue(),
                     timestamp=datetime.now()
@@ -1360,7 +1430,7 @@ class MqttBridge(commands.Cog):
     @commands.admin()
     async def mqtt(self, ctx: commands.Context):
         """MQTT bridge configuration commands"""
-    
+
     @mqtt.command(name="setup")
     async def setup_bridge(self, ctx: commands.Context, broker: str, port: int = 1883, 
                            username: str = "", password: str = ""):
@@ -1371,7 +1441,7 @@ class MqttBridge(commands.Cog):
         await self.config.mqtt_password.set(password)
         
         await ctx.send(f"MQTT broker set to {broker}:{port}")
-        
+
     @mqtt.command(name="topic")
     async def set_topic(self, ctx: commands.Context, topic: str):
         """Set the MQTT topic to subscribe to (default: msh/#)"""
@@ -1381,7 +1451,7 @@ class MqttBridge(commands.Cog):
         # Resubscribe if connected
         if self.connected:
             self.mqtt_client.subscribe(topic)
-    
+
     @mqtt.command(name="messageschannel")
     async def set_messages_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """Set the Discord channel for MQTT messages"""
@@ -1438,7 +1508,7 @@ class MqttBridge(commands.Cog):
         await self.start_mqtt_client()
         
         await ctx.send("MQTT bridge enabled")
-    
+
     @mqtt.command(name="disable")
     async def disable_bridge(self, ctx: commands.Context):
         """Disable the MQTT bridge"""
@@ -1446,7 +1516,7 @@ class MqttBridge(commands.Cog):
         await self.stop_mqtt_client()
         
         await ctx.send("MQTT bridge disabled")
-    
+
     @mqtt.command(name="status")
     async def bridge_status(self, ctx: commands.Context):
         """Show the status of the MQTT bridge"""
@@ -1539,7 +1609,7 @@ class MqttBridge(commands.Cog):
             try:
                 with self.get_db() as conn:
                     c = conn.cursor()
-
+    
                     # Check if we're looking for a node ID (hex with ! prefix)
                     if node_identifier.startswith('!'):
                         hex_id = node_identifier.lower()
@@ -1579,9 +1649,10 @@ class MqttBridge(commands.Cog):
                                 }
                         except ValueError:
                             await interaction.followup.send(f"Invalid node identifier: {node_identifier}. Use a decimal node number or hex ID with ! prefix.", ephemeral=True)
-                            return
+                            return {"success": False, "claim_initiated": False}
             except Exception as e:
                 await interaction.followup.send(f"Node identifier invalid or missing from command.")
+                return {"success": False, "claim_initiated": False}
             
             if found_node:
                 # Check if node is already claimed
@@ -1590,7 +1661,7 @@ class MqttBridge(commands.Cog):
                         await interaction.followup.send("You have already claimed this node!", ephemeral=True)
                     else:
                         await interaction.followup.send(f"This node is already claimed by <@{node_data['owner_id']}>. Contact an admin if this is incorrect.", ephemeral=True)
-                    return
+                    return {"success": False, "claim_initiated": False}
                 
                 # Generate a claim code
                 claim_code = await self.generate_claim_code(node_num, interaction.user.id)
@@ -1627,13 +1698,18 @@ class MqttBridge(commands.Cog):
                     await interaction.user.send(embed=embed)
                     await interaction.followup.send(f"Check your DMs for instructions on how to claim node {node_data.get('nodeId', 'Unknown')}!", ephemeral=True)
                     
+                    return {"success": True, "claim_initiated": True}
+                    
                 except discord.Forbidden:
                     await interaction.followup.send("I couldn't send you a DM! Please enable DMs from server members and try again.", ephemeral=True)
+                    return {"success": False, "claim_initiated": False}
             else:
                 await interaction.followup.send(f"Node not found: {node_identifier}. Make sure the node has been seen by the system recently.", ephemeral=True)
-
+                return {"success": False, "claim_initiated": False}
+    
         except Exception as e:
             await interaction.followup.send(f"Error claiming node: {str(e)}", ephemeral=True)
+            return {"success": False, "claim_initiated": False}
 
     async def list_owned_nodes(self, interation: discord.Interaction, user: discord.Member = None):
         """List nodes owned by you or a specified user"""
@@ -1693,7 +1769,6 @@ class MqttBridge(commands.Cog):
                     await interation.followup.send("You don't own any nodes yet. Use `!node claim` to claim your nodes.", ephemeral=True)
                 else:
                     await interation.followup.send(f"{user.display_name} doesn't own any nodes.", ephemeral=True)
-                
         except Exception as e:
             await interation.followup.send(f"Error listing nodes: {str(e)}", ephemeral=True)
 
@@ -1711,14 +1786,14 @@ class MqttBridge(commands.Cog):
             
             # Check if we're looking for a node ID (hex with ! prefix)
             if node_identifier.startswith('!'):
-                hex_id = node_identifier[1:].lower()  # Remove ! and convert to lowercase
+                hex_id = node_identifier.lower()
                 # Search through nodes to find matching nodeId
                 c.execute("""
                     SELECT n.*, o.discord_id, o.discord_username, o.claimed_at 
                     FROM nodes n 
                     LEFT JOIN node_owners o ON n.node_id = o.node_id 
                     WHERE lower(n.node_id_hex) = ?
-                """, (f"!{hex_id}",))
+                """, (hex_id,))
                 node_row = c.fetchone()
             else:
                 # Assume it's a node number (decimal)
@@ -1967,14 +2042,14 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier[1:].lower()  # Remove ! and convert to lowercase
+                    hex_id = node_identifier.lower()
                     # Search through nodes to find matching nodeId
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id, o.notifications
                         FROM nodes n 
                         LEFT JOIN node_owners o ON n.node_id = o.node_id 
                         WHERE lower(n.node_id_hex) = ?
-                    """, (f"!{hex_id}",))
+                    """, (hex_id,))
                     node_row = c.fetchone()
                 else:
                     # Assume it's a node number (decimal)
@@ -2063,14 +2138,14 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier[1:].lower()  # Remove ! and convert to lowercase
+                    hex_id = node_identifier.lower()
                     # Search for the node to get its node_id
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id
                         FROM nodes n
                         LEFT JOIN node_owners o ON n.node_id = o.node_id
                         WHERE lower(n.node_id_hex) = ?
-                    """, (f"!{hex_id}",))
+                    """, (hex_id,))
                     result = c.fetchone()
                     if result:
                         node_id, node_id_hex, long_name, discord_id = result
@@ -2128,14 +2203,14 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier[1:].lower()  # Remove ! and convert to lowercase
+                    hex_id = node_identifier.lower()
                     # Search for the node to get its node_id
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id 
                         FROM nodes n
                         LEFT JOIN node_owners o ON n.node_id = o.node_id
                         WHERE lower(n.node_id_hex) = ?
-                    """, (f"!{hex_id}",))
+                    """, (hex_id,))
                     result = c.fetchone()
                     if result:
                         node_id, node_id_hex, long_name, previous_owner_id = result
@@ -2222,13 +2297,13 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier[1:].lower()  # Remove ! and convert to lowercase
+                    hex_id = node_identifier.lower()
                     # Search for the node to get its node_id
                     c.execute("""
                         SELECT node_id, node_id_hex, node_num, long_name 
                         FROM nodes
                         WHERE lower(node_id_hex) = ?
-                    """, (f"!{hex_id}",))
+                    """, (hex_id,))
                     result = c.fetchone()
                     if result:
                         node_id, node_id_hex, node_num, long_name = result
@@ -2338,12 +2413,12 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier[1:].lower()
+                    hex_id = node_identifier.lower()
                     c.execute("""
                         SELECT node_id, node_id_hex, node_num, long_name 
                         FROM nodes
                         WHERE lower(node_id_hex) = ?
-                    """, (f"!{hex_id}",))
+                    """, (hex_id,))
                     result = c.fetchone()
                     if result:
                         node_id, node_id_hex, node_num, long_name = result
@@ -2577,3 +2652,53 @@ class MqttBridge(commands.Cog):
 
         except Exception as e:
             await ctx.send(f"Error listing channels: {str(e)}")
+
+class NodeClaimView(discord.ui.View):
+    def __init__(self, node_identifier: str, cog):
+        super().__init__(timeout=3600)  # 1 hour timeout
+        self.node_identifier = node_identifier
+        self.cog = cog
+        self.message = None  # Store reference to the message
+
+    @discord.ui.button(label="Claim This Node", style=discord.ButtonStyle.primary, emoji="🔗")
+    async def claim_node_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Button to claim the node"""
+        await interaction.response.defer(thinking=True)
+        
+        try:
+            # Call the same claim_node function as the slash command
+            result = await self.cog.claim_node(interaction, self.node_identifier)
+            
+            # If claim was initiated successfully, disable the button
+            if result and result.get("claim_initiated"):
+                await self.disable_button(interaction, "Claim code sent! Check your DMs.")
+                
+        except Exception as e:
+            await interaction.followup.send(f"Error claiming node: {str(e)}", ephemeral=True)
+
+    async def disable_button(self, interaction: discord.Interaction, reason: str):
+        """Disable the claim button and update the message"""
+        # Disable the button
+        self.claim_node_button.disabled = True
+        self.claim_node_button.label = reason
+        self.claim_node_button.style = discord.ButtonStyle.secondary
+        
+        # Update the message if we have access to it
+        try:
+            # Get the original message from the interaction
+            if hasattr(interaction, 'message') and interaction.message:
+                await interaction.message.edit(view=self)
+            else:
+                # Try to get the message from the followup
+                original_response = await interaction.original_response()
+                if original_response:
+                    await original_response.edit(view=self)
+        except Exception as e:
+            print(f"Error updating button: {e}")
+
+    async def on_timeout(self):
+        """Disable the button when the view times out"""
+        for item in self.children:
+            item.disabled = True
+            if hasattr(item, 'label'):
+                item.label = "Expired"
