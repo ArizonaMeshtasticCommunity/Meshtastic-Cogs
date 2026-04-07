@@ -1,0 +1,12 @@
+{
+    "author": ["Skordy"],
+    "name": "Strikes",
+    "short": "Comprehensive strike, warning, and note tracking with per-member Discord threads.",
+    "description": "Track strikes, warnings, and moderator notes for server members.  For each member a single Discord thread is created in a configured channel — new cases are logged there and the anchor message is kept up-to-date with current totals.  Supports configurable auto-actions (kick / ban) at strike thresholds and optional DM notifications.",
+    "end_user_data_statement": "This cog stores, per guild member: user ID, moderator ID, case type, case reason, and timestamp for each moderation case (strike, warning, or note) issued to that member.  It also stores the IDs of the associated Discord thread and anchor message.  This data is used solely for moderation purposes within the server and is not shared with third parties.",
+    "hidden": false,
+    "disabled": false,
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 8, 0],
+    "tags": ["moderation", "strikes", "warnings", "logging", "admin"]
+}
