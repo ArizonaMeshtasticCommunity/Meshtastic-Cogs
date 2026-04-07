@@ -16,7 +16,7 @@ import asyncio
 import discord
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 from redbot.core import commands, Config
 from redbot.core.bot import Red
@@ -43,6 +43,23 @@ CASES_PER_PAGE = 5
 
 
 # ── Cog ──────────────────────────────────────────────────────────────────────
+
+
+class MemberOrUser(commands.Converter):
+    """
+    Resolve to a guild Member when possible; fall back to a bare User.
+
+    Accepts mentions, usernames, and raw user IDs.  Using a raw ID lets
+    moderators action members who cannot see the admin channel.
+    """
+
+    async def convert(
+        self, ctx: commands.Context, argument: str
+    ) -> Union[discord.Member, discord.User]:
+        try:
+            return await commands.MemberConverter().convert(ctx, argument)
+        except commands.BadArgument:
+            return await commands.UserConverter().convert(ctx, argument)
 
 
 class Strikes(commands.Cog):
@@ -82,17 +99,26 @@ class Strikes(commands.Cog):
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
+    def _cfg(
+        self,
+        guild: discord.Guild,
+        user: Union[discord.Member, discord.User],
+    ):
+        """Return the Config member accessor for a Member or bare User."""
+        return self.config.member_from_ids(guild.id, user.id)
+
     async def _add_case(
         self,
-        member: discord.Member,
+        guild: discord.Guild,
+        member: Union[discord.Member, discord.User],
         moderator: discord.Member,
         case_type: str,
         reason: str,
     ) -> dict:
         """Persist a new case and return it."""
-        count = await self.config.member(member).case_count()
+        count = await self._cfg(guild, member).case_count()
         case_num = count + 1
-        await self.config.member(member).case_count.set(case_num)
+        await self._cfg(guild, member).case_count.set(case_num)
 
         case = {
             "case_num": case_num,
@@ -101,14 +127,14 @@ class Strikes(commands.Cog):
             "mod_id": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        async with self.config.member(member).cases() as cases:
+        async with self._cfg(guild, member).cases() as cases:
             cases.append(case)
         return case
 
     async def _get_or_create_thread(
         self,
         guild: discord.Guild,
-        member: discord.Member,
+        member: Union[discord.Member, discord.User],
     ) -> Optional[discord.Thread]:
         """
         Return the member's existing forum post (Thread), or create a new one.
@@ -127,7 +153,7 @@ class Strikes(commands.Cog):
             return None
 
         # ── Try to find an existing forum post ──────────────────────────────
-        thread_id = await self.config.member(member).thread_id()
+        thread_id = await self._cfg(guild, member).thread_id()
         if thread_id:
             thread = guild.get_thread(thread_id)
             if thread is None:
@@ -165,12 +191,12 @@ class Strikes(commands.Cog):
         except (discord.HTTPException, discord.Forbidden):
             return None
 
-        await self.config.member(member).thread_id.set(thread.id)
+        await self._cfg(guild, member).thread_id.set(thread.id)
         return thread
 
     @staticmethod
     def _build_anchor_embed(
-        member: discord.Member,
+        member: Union[discord.Member, discord.User],
         strikes: int,
         warnings: int,
         notes: int,
@@ -196,7 +222,7 @@ class Strikes(commands.Cog):
             value=discord.utils.format_dt(member.created_at, "R"),
             inline=True,
         )
-        if member.joined_at:
+        if isinstance(member, discord.Member) and member.joined_at:
             embed.add_field(
                 name="Joined Server",
                 value=discord.utils.format_dt(member.joined_at, "R"),
@@ -215,7 +241,7 @@ class Strikes(commands.Cog):
         return embed
 
     async def _update_anchor(
-        self, guild: discord.Guild, member: discord.Member
+        self, guild: discord.Guild, member: Union[discord.Member, discord.User]
     ) -> None:
         """
         Edit the starter message of the member's forum post with fresh case counts.
@@ -223,7 +249,7 @@ class Strikes(commands.Cog):
         In Discord forum channels the starter message ID equals the thread ID,
         so we fetch it directly from the thread with that ID.
         """
-        thread_id = await self.config.member(member).thread_id()
+        thread_id = await self._cfg(guild, member).thread_id()
         if not thread_id:
             return
 
@@ -232,7 +258,7 @@ class Strikes(commands.Cog):
             if not isinstance(thread, discord.Thread):
                 return
 
-            cases = await self.config.member(member).cases()
+            cases = await self._cfg(guild, member).cases()
             strikes = sum(1 for c in cases if c["type"] == "strike")
             warnings = sum(1 for c in cases if c["type"] == "warning")
             notes = sum(1 for c in cases if c["type"] == "note")
@@ -254,7 +280,7 @@ class Strikes(commands.Cog):
         self,
         thread: discord.Thread,
         case: dict,
-        member: discord.Member,
+        member: Union[discord.Member, discord.User],
         moderator: discord.Member,
     ) -> None:
         """Send a formatted case embed to the member's thread."""
@@ -286,13 +312,15 @@ class Strikes(commands.Cog):
     async def _check_threshold(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: Union[discord.Member, discord.User],
         strike_count: int,
     ) -> Optional[str]:
         """
         Apply an automatic action if the current strike count matches a threshold.
         Returns the action string on success, or None if no action was triggered.
         """
+        if not isinstance(member, discord.Member):
+            return None  # Can't kick/ban a user who is not in this guild
         thresholds = await self.config.guild(ctx.guild).thresholds()
         action = thresholds.get(str(strike_count))
         if not action:
@@ -305,24 +333,27 @@ class Strikes(commands.Cog):
             elif action == "ban":
                 await member.ban(
                     reason=f"Automatic action: {strike_count} strike(s) reached",
-                    delete_message_days=0,
+                    delete_message_seconds=0,
                 )
             return action
         except (discord.Forbidden, discord.HTTPException):
             return None
 
     @staticmethod
-    def _role_check(ctx: commands.Context, member: discord.Member) -> Optional[str]:
+    def _role_check(
+        ctx: commands.Context, member: Union[discord.Member, discord.User]
+    ) -> Optional[str]:
         """
         Return an error string if the author should not be able to action this member,
         or None if the action is permitted.
         """
-        if member.bot:
+        if isinstance(member, discord.Member) and member.bot:
             return "You cannot action bots."
-        if member == ctx.author:
+        if member.id == ctx.author.id:
             return "You cannot action yourself."
         if (
-            ctx.author != ctx.guild.owner
+            isinstance(member, discord.Member)
+            and ctx.author != ctx.guild.owner
             and member.top_role >= ctx.author.top_role
         ):
             return "You cannot action a member with an equal or higher role."
@@ -336,7 +367,7 @@ class Strikes(commands.Cog):
     async def cmd_strike(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
         *,
         reason: str = "No reason provided.",
     ):
@@ -355,9 +386,9 @@ class Strikes(commands.Cog):
             return await ctx.send(err)
 
         async with ctx.typing():
-            case = await self._add_case(member, ctx.author, "strike", reason)
+            case = await self._add_case(ctx.guild, member, ctx.author, "strike", reason)
 
-            cases = await self.config.member(member).cases()
+            cases = await self._cfg(ctx.guild, member).cases()
             strike_count = sum(1 for c in cases if c["type"] == "strike")
 
             thread = await self._get_or_create_thread(ctx.guild, member)
@@ -419,7 +450,7 @@ class Strikes(commands.Cog):
     async def cmd_warn(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
         *,
         reason: str = "No reason provided.",
     ):
@@ -437,9 +468,9 @@ class Strikes(commands.Cog):
             return await ctx.send(err)
 
         async with ctx.typing():
-            case = await self._add_case(member, ctx.author, "warning", reason)
+            case = await self._add_case(ctx.guild, member, ctx.author, "warning", reason)
 
-            cases = await self.config.member(member).cases()
+            cases = await self._cfg(ctx.guild, member).cases()
             warning_count = sum(1 for c in cases if c["type"] == "warning")
 
             thread = await self._get_or_create_thread(ctx.guild, member)
@@ -489,7 +520,7 @@ class Strikes(commands.Cog):
     async def cmd_note(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
         *,
         note: str,
     ):
@@ -502,11 +533,11 @@ class Strikes(commands.Cog):
         **Example:**
         - `[p]modnote @User Suspected alt of @BannedUser`
         """
-        if member.bot:
+        if isinstance(member, discord.Member) and member.bot:
             return await ctx.send("You cannot add notes for bots.")
 
         async with ctx.typing():
-            case = await self._add_case(member, ctx.author, "note", note)
+            case = await self._add_case(ctx.guild, member, ctx.author, "note", note)
 
             thread = await self._get_or_create_thread(ctx.guild, member)
             if thread:
@@ -539,7 +570,7 @@ class Strikes(commands.Cog):
     async def cmd_history(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
     ):
         """View the full case history for a member.
 
@@ -548,8 +579,8 @@ class Strikes(commands.Cog):
         **Example:**
         - `[p]history @User`
         """
-        cases = await self.config.member(member).cases()
-        thread_id = await self.config.member(member).thread_id()
+        cases = await self._cfg(ctx.guild, member).cases()
+        thread_id = await self._cfg(ctx.guild, member).thread_id()
 
         if not cases:
             embed = discord.Embed(
@@ -620,7 +651,7 @@ class Strikes(commands.Cog):
     async def cmd_case(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
         case_num: int,
     ):
         """View a specific case by case number.
@@ -628,7 +659,7 @@ class Strikes(commands.Cog):
         **Example:**
         - `[p]case @User 3`
         """
-        cases = await self.config.member(member).cases()
+        cases = await self._cfg(ctx.guild, member).cases()
         matching = [c for c in cases if c["case_num"] == case_num]
         if not matching:
             return await ctx.send(
@@ -668,7 +699,7 @@ class Strikes(commands.Cog):
     async def cmd_removecase(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
         case_num: int,
         *,
         reason: str = "No reason provided.",
@@ -682,7 +713,7 @@ class Strikes(commands.Cog):
         - `[p]removecase @User 4 Entered in error`
         - `[p]removecase @User 4`
         """
-        async with self.config.member(member).cases() as cases:
+        async with self._cfg(ctx.guild, member).cases() as cases:
             matching = [c for c in cases if c["case_num"] == case_num]
             if not matching:
                 return await ctx.send(
@@ -694,7 +725,7 @@ class Strikes(commands.Cog):
         await self._update_anchor(ctx.guild, member)
 
         # Log the removal to the forum thread
-        thread_id = await self.config.member(member).thread_id()
+        thread_id = await self._cfg(ctx.guild, member).thread_id()
         if thread_id:
             thread = ctx.guild.get_thread(thread_id)
             if thread is None:
@@ -747,7 +778,7 @@ class Strikes(commands.Cog):
     async def cmd_clearhistory(
         self,
         ctx: commands.Context,
-        member: discord.Member,
+        member: MemberOrUser,
     ):
         """Clear **all** cases from a member's record.
 
@@ -757,11 +788,11 @@ class Strikes(commands.Cog):
         **Example:**
         - `[p]clearhistory @User`
         """
-        cases = await self.config.member(member).cases()
+        cases = await self._cfg(ctx.guild, member).cases()
         if not cases:
             return await ctx.send(f"{member.mention} has no cases to clear.")
 
-        thread_id = await self.config.member(member).thread_id()
+        thread_id = await self._cfg(ctx.guild, member).thread_id()
         thread_note = " Their forum thread will also be deleted." if thread_id else ""
         await ctx.send(
             f"⚠️ This will permanently delete **{len(cases)}** case(s) for "
@@ -784,7 +815,7 @@ class Strikes(commands.Cog):
             return await ctx.send("Cancelled.")
 
         # Delete the forum thread if one exists
-        thread_id = await self.config.member(member).thread_id()
+        thread_id = await self._cfg(ctx.guild, member).thread_id()
         thread_deleted = False
         if thread_id:
             thread = ctx.guild.get_thread(thread_id)
@@ -800,9 +831,9 @@ class Strikes(commands.Cog):
                 except (discord.Forbidden, discord.HTTPException):
                     pass
 
-        await self.config.member(member).cases.set([])
-        await self.config.member(member).thread_id.set(None)
-        await self.config.member(member).case_count.set(0)
+        await self._cfg(ctx.guild, member).cases.set([])
+        await self._cfg(ctx.guild, member).thread_id.set(None)
+        await self._cfg(ctx.guild, member).case_count.set(0)
 
         msg = f"✅ Cleared all cases for {member.mention}."
         if thread_deleted:
