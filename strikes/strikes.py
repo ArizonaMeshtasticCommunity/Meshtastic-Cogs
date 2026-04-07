@@ -150,15 +150,18 @@ class Strikes(commands.Cog):
         thread_name = f"{prefix}{member.display_name}"[:100]
 
         # The starter message of the forum post serves as the live summary.
-        # In Discord's API, the starter message ID equals the thread ID.
+        # ForumChannel.create_thread() returns a ThreadWithMessage namedtuple;
+        # we must access .thread to get the actual discord.Thread object.
+        # In Discord's API the starter message ID equals the thread ID.
         starter_embed = self._build_anchor_embed(member, strikes=0, warnings=0, notes=0)
         try:
-            thread = await channel.create_thread(
+            result = await channel.create_thread(
                 name=thread_name,
                 embed=starter_embed,
                 auto_archive_duration=10080,  # 7 days
                 reason=f"Case thread for {member} ({member.id})",
             )
+            thread = result.thread
         except (discord.HTTPException, discord.Forbidden):
             return None
 
