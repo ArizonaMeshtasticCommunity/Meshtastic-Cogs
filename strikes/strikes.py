@@ -6,10 +6,10 @@ Supports three case types:
   • Warning — formal notice; does NOT count toward thresholds
   • Note    — internal moderator note; never shown to the member
 
-For each member a single Discord thread is created in the configured channel.
-All cases are logged to that thread and the anchor message in the channel is
-kept up-to-date with current totals.  If the thread is archived it is
-automatically unarchived on the next action.
+For each member a single forum post (Discord Thread) is created in the
+configured Forum Channel.  All cases are logged as replies in that post and
+the starter/first message of the post is kept up-to-date with current totals.
+If the thread is archived it is automatically unarchived on the next action.
 """
 
 import asyncio
@@ -54,7 +54,7 @@ class Strikes(commands.Cog):
     for case discussion and record-keeping.
 
     **Quick-start:**
-    1. `[p]strikeset channel #your-mod-channel` — set up the case log channel.
+    1. `[p]strikeset channel #your-forum-channel` — set up the case forum channel.
     2. `[p]strikeset threshold add 3 kick` — optional: auto-kick at 3 strikes.
     3. `[p]strike @User Reason` / `[p]warn @User Reason` — start logging.
     """
@@ -68,17 +68,16 @@ class Strikes(commands.Cog):
         )
 
         self.config.register_guild(
-            strike_channel=None,   # TextChannel ID for case threads
+            strike_channel=None,   # ForumChannel ID for case threads
             dm_on_action=True,     # DM member on strike/warning
             thread_prefix="📋 ",   # Prepended to thread names
             thresholds={},         # {str(strike_count): action}
         )
 
         self.config.register_member(
-            cases=[],                # List of case dicts
-            thread_id=None,          # ID of the member's case thread
-            summary_message_id=None, # ID of the anchor msg in parent channel
-            case_count=0,            # Ever-incrementing case counter
+            cases=[],          # List of case dicts
+            thread_id=None,    # ID of the member's forum post (Thread)
+            case_count=0,      # Ever-incrementing case counter
         )
 
     # ── Internal helpers ─────────────────────────────────────────────────────
@@ -112,21 +111,22 @@ class Strikes(commands.Cog):
         member: discord.Member,
     ) -> Optional[discord.Thread]:
         """
-        Return the member's existing case thread, or create a new one.
+        Return the member's existing forum post (Thread), or create a new one.
 
-        The thread is anchored to an embed message sent to the configured
-        channel.  That anchor message is kept updated with current case totals.
-        Returns None if no strike channel is configured or thread creation fails.
+        Each member gets a single forum post inside the configured ForumChannel.
+        The starter/first message of that post acts as the live summary and is
+        updated on every case action.  Subsequent cases are posted as replies.
+        Returns None if no forum channel is configured or creation fails.
         """
         channel_id = await self.config.guild(guild).strike_channel()
         if not channel_id:
             return None
 
         channel = guild.get_channel(channel_id)
-        if not isinstance(channel, discord.TextChannel):
+        if not isinstance(channel, discord.ForumChannel):
             return None
 
-        # ── Try to find an existing thread ──────────────────────────────────
+        # ── Try to find an existing forum post ──────────────────────────────
         thread_id = await self.config.member(member).thread_id()
         if thread_id:
             thread = guild.get_thread(thread_id)
@@ -143,19 +143,19 @@ class Strikes(commands.Cog):
                     except (discord.Forbidden, discord.HTTPException):
                         pass  # Sending a message will auto-unarchive anyway
                 return thread
-            # Thread was deleted externally — fall through to recreate
+            # Post was deleted externally — fall through to recreate
 
-        # ── Create a new thread ──────────────────────────────────────────────
+        # ── Create a new forum post ──────────────────────────────────────────
         prefix = await self.config.guild(guild).thread_prefix()
         thread_name = f"{prefix}{member.display_name}"[:100]
 
-        # Send an anchor embed to the channel; the thread attaches to it so
-        # moderators can see a directory of all case files at a glance.
-        anchor_embed = self._build_anchor_embed(member, strikes=0, warnings=0, notes=0)
+        # The starter message of the forum post serves as the live summary.
+        # In Discord's API, the starter message ID equals the thread ID.
+        starter_embed = self._build_anchor_embed(member, strikes=0, warnings=0, notes=0)
         try:
-            anchor_msg = await channel.send(embed=anchor_embed)
-            thread = await anchor_msg.create_thread(
+            thread = await channel.create_thread(
                 name=thread_name,
+                embed=starter_embed,
                 auto_archive_duration=10080,  # 7 days
                 reason=f"Case thread for {member} ({member.id})",
             )
@@ -163,40 +163,6 @@ class Strikes(commands.Cog):
             return None
 
         await self.config.member(member).thread_id.set(thread.id)
-        await self.config.member(member).summary_message_id.set(anchor_msg.id)
-
-        # Post a context message inside the thread itself
-        intro = discord.Embed(
-            title="📋 Case Thread Opened",
-            description=(
-                f"This thread tracks all moderation cases for {member.mention}.\n"
-                "New cases will be logged here automatically.\n"
-                "Use this thread to discuss cases with your moderation team."
-            ),
-            color=discord.Color.dark_orange(),
-        )
-        intro.set_thumbnail(url=member.display_avatar.url)
-        intro.add_field(
-            name="Member",
-            value=f"{member.mention}\n`{member.id}`",
-            inline=True,
-        )
-        intro.add_field(
-            name="Account Created",
-            value=discord.utils.format_dt(member.created_at, "R"),
-            inline=True,
-        )
-        if member.joined_at:
-            intro.add_field(
-                name="Joined Server",
-                value=discord.utils.format_dt(member.joined_at, "R"),
-                inline=True,
-            )
-        try:
-            await thread.send(embed=intro)
-        except discord.HTTPException:
-            pass
-
         return thread
 
     @staticmethod
@@ -207,10 +173,14 @@ class Strikes(commands.Cog):
         notes: int,
         recent_cases: Optional[list] = None,
     ) -> discord.Embed:
-        """Build the embed that lives in the parent channel as the thread anchor."""
+        """Build the starter-message embed for the member's forum post."""
         embed = discord.Embed(
             title=f"📋 {member.display_name}",
-            description=f"{member.mention}  •  `{member.id}`",
+            description=(
+                f"{member.mention}  •  `{member.id}`\n"
+                "This thread tracks all moderation cases for this member.\n"
+                "New cases are logged here automatically."
+            ),
             color=discord.Color.dark_orange(),
             timestamp=datetime.now(timezone.utc),
         )
@@ -218,6 +188,17 @@ class Strikes(commands.Cog):
         embed.add_field(name="⚠️ Strikes", value=str(strikes), inline=True)
         embed.add_field(name="🟡 Warnings", value=str(warnings), inline=True)
         embed.add_field(name="📝 Notes", value=str(notes), inline=True)
+        embed.add_field(
+            name="Account Created",
+            value=discord.utils.format_dt(member.created_at, "R"),
+            inline=True,
+        )
+        if member.joined_at:
+            embed.add_field(
+                name="Joined Server",
+                value=discord.utils.format_dt(member.joined_at, "R"),
+                inline=True,
+            )
 
         if recent_cases:
             lines = [
@@ -233,15 +214,19 @@ class Strikes(commands.Cog):
     async def _update_anchor(
         self, guild: discord.Guild, member: discord.Member
     ) -> None:
-        """Edit the anchor message in the parent channel with fresh case counts."""
+        """
+        Edit the starter message of the member's forum post with fresh case counts.
+
+        In Discord forum channels the starter message ID equals the thread ID,
+        so we fetch it directly from the thread with that ID.
+        """
         thread_id = await self.config.member(member).thread_id()
-        summary_msg_id = await self.config.member(member).summary_message_id()
-        if not thread_id or not summary_msg_id:
+        if not thread_id:
             return
 
         try:
             thread = await self.bot.fetch_channel(thread_id)
-            if not isinstance(thread, discord.Thread) or thread.parent is None:
+            if not isinstance(thread, discord.Thread):
                 return
 
             cases = await self.config.member(member).cases()
@@ -256,8 +241,9 @@ class Strikes(commands.Cog):
                 notes=notes,
                 recent_cases=cases,
             )
-            msg = await thread.parent.fetch_message(summary_msg_id)
-            await msg.edit(embed=embed)
+            # Starter message ID == thread ID in forum posts
+            starter_msg = await thread.fetch_message(thread_id)
+            await starter_msg.edit(embed=embed)
         except (discord.NotFound, discord.HTTPException):
             pass
 
@@ -764,9 +750,11 @@ class Strikes(commands.Cog):
     async def strikeset_channel(
         self,
         ctx: commands.Context,
-        channel: Optional[discord.TextChannel] = None,
+        channel: Optional[discord.ForumChannel] = None,
     ):
-        """Set (or view) the channel where case threads will be created.
+        """Set (or view) the **forum channel** where member case posts will be created.
+
+        The channel must be a **Forum Channel**, not a regular text channel.
 
         **Examples:**
         - `[p]strikeset channel #mod-cases`
@@ -775,18 +763,18 @@ class Strikes(commands.Cog):
         if channel is None:
             cid = await self.config.guild(ctx.guild).strike_channel()
             if cid:
-                await ctx.send(f"Current case channel: <#{cid}>")
+                await ctx.send(f"Current case forum channel: <#{cid}>")
             else:
                 await ctx.send(
-                    "No case channel is configured.  "
-                    "Set one with `[p]strikeset channel #channel`."
+                    "No case forum channel is configured.  "
+                    "Set one with `[p]strikeset channel #forum-channel`."
                 )
             return
 
         await self.config.guild(ctx.guild).strike_channel.set(channel.id)
         await ctx.send(
-            f"✅ Case channel set to {channel.mention}.  "
-            "New case threads will be created there."
+            f"✅ Case forum channel set to {channel.mention}.  "
+            "New member case posts will be created there."
         )
 
     @strikeset.command(name="removechannel")
@@ -917,7 +905,7 @@ class Strikes(commands.Cog):
             color=discord.Color.dark_orange(),
         )
         embed.add_field(
-            name="Case Channel",
+            name="Case Forum Channel",
             value=f"<#{cid}>" if cid else "Not set",
             inline=False,
         )
