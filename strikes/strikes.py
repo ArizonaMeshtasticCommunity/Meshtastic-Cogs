@@ -670,12 +670,16 @@ class Strikes(commands.Cog):
         ctx: commands.Context,
         member: discord.Member,
         case_num: int,
+        *,
+        reason: str = "No reason provided.",
     ):
         """Remove a specific case from a member's record.
 
+        The removal and reason are logged to the member's forum thread.
         Use `[p]history @User` to find case numbers.
 
-        **Example:**
+        **Examples:**
+        - `[p]removecase @User 4 Entered in error`
         - `[p]removecase @User 4`
         """
         async with self.config.member(member).cases() as cases:
@@ -688,6 +692,48 @@ class Strikes(commands.Cog):
             cases.remove(removed)
 
         await self._update_anchor(ctx.guild, member)
+
+        # Log the removal to the forum thread
+        thread_id = await self.config.member(member).thread_id()
+        if thread_id:
+            thread = ctx.guild.get_thread(thread_id)
+            if thread is None:
+                try:
+                    thread = await self.bot.fetch_channel(thread_id)
+                except (discord.NotFound, discord.HTTPException):
+                    thread = None
+
+            if isinstance(thread, discord.Thread):
+                if thread.archived:
+                    try:
+                        await thread.edit(archived=False)
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+
+                orig_ts = datetime.fromisoformat(removed["timestamp"])
+                orig_emoji = CASE_EMOJIS.get(removed["type"], "❓")
+                removal_embed = discord.Embed(
+                    title=f"🗑️ Case #{case_num} Removed",
+                    color=discord.Color.greyple(),
+                    timestamp=datetime.now(timezone.utc),
+                )
+                removal_embed.add_field(
+                    name="Removed Case",
+                    value=(
+                        f"{orig_emoji} **{removed['type'].title()}** — Case #{case_num}\n"
+                        f"Original reason: {removed['reason']}\n"
+                        f"Issued: {discord.utils.format_dt(orig_ts, 'D')}"
+                    ),
+                    inline=False,
+                )
+                removal_embed.add_field(
+                    name="Removal Reason", value=reason, inline=False
+                )
+                removal_embed.set_footer(text=f"Removed by: {ctx.author}")
+                try:
+                    await thread.send(embed=removal_embed)
+                except discord.HTTPException:
+                    pass
 
         emoji = CASE_EMOJIS.get(removed["type"], "❓")
         await ctx.send(
@@ -715,9 +761,11 @@ class Strikes(commands.Cog):
         if not cases:
             return await ctx.send(f"{member.mention} has no cases to clear.")
 
+        thread_id = await self.config.member(member).thread_id()
+        thread_note = " Their forum thread will also be deleted." if thread_id else ""
         await ctx.send(
             f"⚠️ This will permanently delete **{len(cases)}** case(s) for "
-            f"{member.mention}.  Reply `yes` to confirm or `no` to cancel."
+            f"{member.mention}.{thread_note}  Reply `yes` to confirm or `no` to cancel."
         )
 
         def check(m: discord.Message) -> bool:
@@ -735,9 +783,33 @@ class Strikes(commands.Cog):
         if reply.content.lower() == "no":
             return await ctx.send("Cancelled.")
 
+        # Delete the forum thread if one exists
+        thread_id = await self.config.member(member).thread_id()
+        thread_deleted = False
+        if thread_id:
+            thread = ctx.guild.get_thread(thread_id)
+            if thread is None:
+                try:
+                    thread = await self.bot.fetch_channel(thread_id)
+                except (discord.NotFound, discord.HTTPException):
+                    thread = None
+            if isinstance(thread, discord.Thread):
+                try:
+                    await thread.delete()
+                    thread_deleted = True
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
         await self.config.member(member).cases.set([])
-        await self._update_anchor(ctx.guild, member)
-        await ctx.send(f"✅ Cleared all cases for {member.mention}.")
+        await self.config.member(member).thread_id.set(None)
+        await self.config.member(member).case_count.set(0)
+
+        msg = f"✅ Cleared all cases for {member.mention}."
+        if thread_deleted:
+            msg += " Their forum thread has also been deleted."
+        elif thread_id:
+            msg += " (Could not delete the forum thread — check bot permissions.)"
+        await ctx.send(msg)
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
