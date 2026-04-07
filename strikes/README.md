@@ -12,7 +12,7 @@ Track **strikes**, **warnings**, and **moderator notes** for server members.  Fo
 [p]strikeset channel #mod-cases
 ```
 
-That's it.  The cog is now ready.  Optionally configure auto-actions:
+The channel must be a **Forum Channel**.  That's it — the cog is now ready.  Optionally configure auto-actions:
 
 ```
 [p]strikeset threshold add 3 kick
@@ -49,7 +49,7 @@ That's it.  The cog is now ready.  Optionally configure auto-actions:
 | Command | Description |
 |---------|-------------|
 | `[p]clearhistory <member>` | Clear **all** cases for a member (with confirmation) |
-| `[p]strikeset channel [#channel]` | Set (or view) the case log channel |
+| `[p]strikeset channel [#forum-channel]` | Set (or view) the case forum channel |
 | `[p]strikeset removechannel` | Disable thread logging |
 | `[p]strikeset dm <true\|false>` | Toggle DM notifications |
 | `[p]strikeset prefix <text>` | Set the case thread name prefix |
@@ -62,11 +62,11 @@ That's it.  The cog is now ready.  Optionally configure auto-actions:
 
 ## How threads work
 
-1. The **first time** a member is actioned, the bot posts an embed ("anchor") to the configured channel and creates a thread from it.
-2. Every subsequent case for that member is posted as a new message inside the existing thread.
-3. The anchor embed in the channel is updated automatically to reflect current strike / warning / note totals and the three most recent cases.
-4. If the thread is archived by Discord's auto-archive feature, it is automatically unarchived the next time a case is added.
-5. Moderators can use the thread to discuss cases among themselves.
+1. The **first time** a member is actioned, the bot creates a **forum post** in the configured Forum Channel.  The starter/first message of that post is a live summary embed.
+2. Every subsequent case for that member is posted as a reply in that existing forum post.
+3. The starter message embed is updated automatically to reflect current strike / warning / note totals, member account/join dates, and the three most recent cases.
+4. Moderators and admins can use the forum post to discuss cases among themselves.
+5. If the post is archived by Discord's auto-archive feature, it is automatically unarchived the next time a case is added.
 
 ---
 
