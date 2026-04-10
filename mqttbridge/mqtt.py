@@ -1568,6 +1568,7 @@ class MqttBridge(commands.Cog):
     )
     @app_commands.choices(action=[
         app_commands.Choice(name="claim", value="claim"),
+        app_commands.Choice(name="unclaim", value="unclaim"),
         app_commands.Choice(name="list", value="list"),
         app_commands.Choice(name="info", value="info"),
         app_commands.Choice(name="stats", value="stats"),
@@ -1584,6 +1585,9 @@ class MqttBridge(commands.Cog):
             if action == "claim":
                 # Handle claim action
                 await self.claim_node(interaction, node_identifier)
+            elif action == "unclaim":
+                # Handle unclaim action
+                await self.unclaim_own_node(interaction, node_identifier)
             elif action == "list":
                 # Handle list action
                 await self.list_owned_nodes(interaction, user or interaction.user)
@@ -2112,6 +2116,74 @@ class MqttBridge(commands.Cog):
             
         except Exception as e:
             await interaction.followup.send(f"Error toggling notifications: {str(e)}", ephemeral=True)
+
+    async def unclaim_own_node(self, interaction: discord.Interaction, node_identifier: str):
+        """Unclaim a node only if it is currently owned by the requesting user"""
+        if not node_identifier:
+            await interaction.followup.send("You must specify a node identifier to unclaim.", ephemeral=True)
+            return
+
+        try:
+            with self.get_db() as conn:
+                c = conn.cursor()
+
+                # Resolve node by !hex id or decimal node number
+                if node_identifier.startswith('!'):
+                    hex_id = node_identifier.lower()
+                    c.execute("""
+                        SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id
+                        FROM nodes n
+                        LEFT JOIN node_owners o ON n.node_id = o.node_id
+                        WHERE lower(n.node_id_hex) = ?
+                    """, (hex_id,))
+                    node_row = c.fetchone()
+                else:
+                    try:
+                        node_num = int(node_identifier)
+                        c.execute("""
+                            SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id
+                            FROM nodes n
+                            LEFT JOIN node_owners o ON n.node_id = o.node_id
+                            WHERE n.node_num = ?
+                        """, (node_num,))
+                        node_row = c.fetchone()
+                    except ValueError:
+                        await interaction.followup.send(
+                            f"Invalid node identifier: {node_identifier}. Use a decimal node number or hex ID with ! prefix.",
+                            ephemeral=True
+                        )
+                        return
+
+                if not node_row:
+                    await interaction.followup.send(f"Node not found: {node_identifier}", ephemeral=True)
+                    return
+
+                node_id, node_id_hex, long_name, owner_id = node_row
+
+                if not owner_id:
+                    await interaction.followup.send(f"Node {node_id_hex} is not currently claimed by anyone.", ephemeral=True)
+                    return
+
+                if int(owner_id) != interaction.user.id:
+                    await interaction.followup.send(
+                        f"You cannot unclaim node {node_id_hex}. It is owned by <@{owner_id}>.",
+                        ephemeral=True
+                    )
+                    return
+
+                c.execute("DELETE FROM node_owners WHERE node_id = ? AND discord_id = ?", (node_id, owner_id))
+                conn.commit()
+
+            embed = discord.Embed(
+                title="Node Unclaimed",
+                description=f"You have unclaimed node {long_name} ({node_id_hex}).",
+                color=discord.Color.orange(),
+                timestamp=datetime.now()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            await interaction.followup.send(f"Error unclaiming node: {str(e)}", ephemeral=True)
 
     # Node Administration commands (admin only)
     @commands.group(name="nodeadmin")
