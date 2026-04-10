@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Red-DiscordBot
+        run: |
+          pip install --upgrade pip
+          pip install "Red-DiscordBot"
+
+      - name: Install mqttbridge requirements
+        run: pip install paho-mqtt>=2.0 meshtastic cryptography aiohttp
+
+      - name: Syntax check (compile all cogs)
+        run: python -m compileall -q mqttbridge strikes
+
+      - name: Lint with flake8
+        run: |
+          pip install flake8
+          # E9   — syntax / indentation errors (always fatal)
+          # F821 — undefined name (would crash at runtime)
+          # F811 — redefinition of an unused import / name
+          flake8 mqttbridge strikes --count --select=E9,F821,F811 --show-source --statistics
+
+      - name: Verify cog imports
+        run: |
+          python -c "import mqttbridge; print('mqttbridge: OK')"
+          python -c "import strikes;    print('strikes:    OK')"
