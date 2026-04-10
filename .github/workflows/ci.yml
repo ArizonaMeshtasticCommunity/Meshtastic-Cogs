@@ -28,7 +28,7 @@ jobs:
           pip install "Red-DiscordBot"
 
       - name: Install mqttbridge requirements
-        run: pip install paho-mqtt>=2.0 meshtastic cryptography aiohttp
+        run: pip install paho-mqtt>=2.0 meshtastic
 
       - name: Syntax check (compile all cogs)
         run: python -m compileall -q mqttbridge strikes
