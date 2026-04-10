@@ -11,7 +11,6 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.client import CallbackAPIVersion
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.menus import menu, DEFAULT_CONTROLS
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 import google.protobuf.json_format
 
@@ -434,7 +433,7 @@ class MqttBridge(commands.Cog):
             nonce = nonce_packet_id + nonce_from_node
 
             cipher = Cipher(
-                algorithms.AES(key_bytes), modes.CTR(nonce), backend=default_backend()
+                algorithms.AES(key_bytes), modes.CTR(nonce)
             )
             decryptor = cipher.decryptor()
             decrypted_bytes = (
