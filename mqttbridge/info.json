@@ -1,9 +1,9 @@
 {
     "author": ["Skordy"],
     "name": "Meshtastic MQTT Bridge",
-    "install_msg": "Meshtastic MQTT Bridge",
+    "install_msg": "Before loading this cog, install the following into your bot venv manually:\n  pip install cryptography\nThese are native extension packages that cannot be safely managed by Red's downloader while the bot is running.",
     "short": "Meshtastic MQTT Bridge",
     "description": "Meshtastic MQTT bridge to Discord",
-    "requirements": ["paho-mqtt>=2.0", "meshtastic", "cryptography", "aiohttp"],
+    "requirements": ["paho-mqtt>=2.0", "meshtastic"],
     "end_user_data_statement": "This cog collects data related to MQTT messages and configurations. It may store a users Discord ID, MQTT topics, and message content for the purpose of bridging Discord and MQTT functionalities. This data is used to facilitate communication between the two platforms and is not shared with third parties."
 }
