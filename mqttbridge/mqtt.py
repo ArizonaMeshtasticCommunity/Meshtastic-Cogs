@@ -218,6 +218,13 @@ class MqttBridge(commands.Cog):
                     )
                 ''')
 
+                # Migrate existing node_id_hex values to zero-padded 8-char format
+                c.execute("""
+                    UPDATE nodes
+                    SET node_id_hex = '!' || printf('%08x', node_num)
+                    WHERE length(node_id_hex) < 9
+                """)
+
                 conn.commit()
         except Exception as e:
             print(f"Error setting up database: {str(e)}")
@@ -365,7 +372,7 @@ class MqttBridge(commands.Cog):
                 if mp.to != 4294967295:
                     return  # Ignore messages not sent to broadcast
                 
-                message_text = mp.decoded.payload.decode('utf-8')
+                message_text = mp.decoded.payload.decode('utf-8').strip(' \t\n\r"\'"\u201c\u201d\u2018\u2019')
 
                 # Store this message in database
                 await self.store_message_history(mp, se, message_text)
@@ -463,7 +470,7 @@ class MqttBridge(commands.Cog):
 
             # Get sender node ID
             node_id = getattr(mp, "from") if hasattr(mp, "from") else 0
-            node_id_hex = format(node_id, 'x')
+            node_id_hex = format(node_id, '08x')
 
             # Convert enum values to string representations
             hw_model = node_info.hw_model
@@ -631,7 +638,7 @@ class MqttBridge(commands.Cog):
 
             # Get sender info - convert int to hex string
             sender_int = getattr(mp, "from") if hasattr(mp, "from") else 0
-            sender_id = format(sender_int, 'x')  # Format as hex string without '0x' prefix
+            sender_id = format(sender_int, '08x')  # Format as zero-padded hex string
 
             # Get gateway ID from ServiceEnvelope
             via = int(se.gateway_id[1:], 16) if hasattr(se, 'gateway_id') and se.gateway_id else None
@@ -1212,8 +1219,8 @@ class MqttBridge(commands.Cog):
     async def check_claim_code(self, mp):
         """Check if the message contains a claim code and process it"""
         try:            
-            # Extract message text
-            message_text = mp.decoded.payload.decode('utf-8').strip()
+            # Extract message text, stripping whitespace and surrounding quotes
+            message_text = mp.decoded.payload.decode('utf-8').strip(' \t\n\r"\'"\u201c\u201d\u2018\u2019')
             
             # Check if this looks like a claim code (format: CLAIM-XXXX)
             if message_text.startswith("CLAIM-"):
@@ -1250,7 +1257,7 @@ class MqttBridge(commands.Cog):
                         try:
                             user = await self.bot.fetch_user(int(discord_id))
                             if user:
-                                await user.send(f"✅ Node !{format(sender_node_num, 'x')} has been successfully claimed as your node!")
+                                await user.send(f"✅ Node !{format(sender_node_num, '08x')} has been successfully claimed as your node!")
                         except Exception as e:
                             print(f"Error notifying user: {str(e)}")
             
@@ -1393,6 +1400,14 @@ class MqttBridge(commands.Cog):
         except Exception as e:
             print(f"Error formatting timestamp: {str(e)}")
             return "Unknown time"
+
+    @staticmethod
+    def normalize_node_hex(node_identifier: str) -> str:
+        """Normalize a !hex node identifier to zero-padded 8-character form."""
+        try:
+            return f"!{format(int(node_identifier[1:], 16), '08x')}"
+        except (ValueError, IndexError):
+            return node_identifier.lower()
 
     def create_node_pages(self, nodes, title, nodes_per_page=10):
         """Helper method to create embed pages for node listings"""
@@ -1604,7 +1619,7 @@ class MqttBridge(commands.Cog):
 
     async def claim_node(self, interaction: discord.Interaction, node_identifier: str):
         """Claim a node as yours"""
-        try:            
+        try:
             node_num = None
             found_node = False
             node_data = {}
@@ -1615,7 +1630,7 @@ class MqttBridge(commands.Cog):
     
                     # Check if we're looking for a node ID (hex with ! prefix)
                     if node_identifier.startswith('!'):
-                        hex_id = node_identifier.lower()
+                        hex_id = self.normalize_node_hex(node_identifier)
                         # Search through nodes to find matching nodeId
                         c.execute("""
                             SELECT n.node_num, n.node_id_hex, n.long_name, o.discord_id
@@ -1789,13 +1804,13 @@ class MqttBridge(commands.Cog):
             
             # Check if we're looking for a node ID (hex with ! prefix)
             if node_identifier.startswith('!'):
-                hex_id = node_identifier.lower()
+                hex_id = self.normalize_node_hex(node_identifier)
                 # Search through nodes to find matching nodeId
                 c.execute("""
                     SELECT n.*, o.discord_id, o.discord_username, o.claimed_at 
                     FROM nodes n 
                     LEFT JOIN node_owners o ON n.node_id = o.node_id 
-                    WHERE lower(n.node_id_hex) = ?
+                    WHERE n.node_id_hex = ?
                 """, (hex_id,))
                 node_row = c.fetchone()
             else:
@@ -2045,13 +2060,13 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier.lower()
+                    hex_id = self.normalize_node_hex(node_identifier)
                     # Search through nodes to find matching nodeId
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id, o.notifications
                         FROM nodes n 
                         LEFT JOIN node_owners o ON n.node_id = o.node_id 
-                        WHERE lower(n.node_id_hex) = ?
+                        WHERE n.node_id_hex = ?
                     """, (hex_id,))
                     node_row = c.fetchone()
                 else:
@@ -2128,12 +2143,12 @@ class MqttBridge(commands.Cog):
 
                 # Resolve node by !hex id or decimal node number
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier.lower()
+                    hex_id = self.normalize_node_hex(node_identifier)
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id
                         FROM nodes n
                         LEFT JOIN node_owners o ON n.node_id = o.node_id
-                        WHERE lower(n.node_id_hex) = ?
+                        WHERE n.node_id_hex = ?
                     """, (hex_id,))
                     node_row = c.fetchone()
                 else:
@@ -2209,13 +2224,13 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier.lower()
+                    hex_id = self.normalize_node_hex(node_identifier)
                     # Search for the node to get its node_id
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id
                         FROM nodes n
                         LEFT JOIN node_owners o ON n.node_id = o.node_id
-                        WHERE lower(n.node_id_hex) = ?
+                        WHERE n.node_id_hex = ?
                     """, (hex_id,))
                     result = c.fetchone()
                     if result:
@@ -2274,13 +2289,13 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier.lower()
+                    hex_id = self.normalize_node_hex(node_identifier)
                     # Search for the node to get its node_id
                     c.execute("""
                         SELECT n.node_id, n.node_id_hex, n.long_name, o.discord_id 
                         FROM nodes n
                         LEFT JOIN node_owners o ON n.node_id = o.node_id
-                        WHERE lower(n.node_id_hex) = ?
+                        WHERE n.node_id_hex = ?
                     """, (hex_id,))
                     result = c.fetchone()
                     if result:
@@ -2368,12 +2383,12 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier.lower()
+                    hex_id = self.normalize_node_hex(node_identifier)
                     # Search for the node to get its node_id
                     c.execute("""
                         SELECT node_id, node_id_hex, node_num, long_name 
                         FROM nodes
-                        WHERE lower(node_id_hex) = ?
+                        WHERE node_id_hex = ?
                     """, (hex_id,))
                     result = c.fetchone()
                     if result:
@@ -2484,11 +2499,11 @@ class MqttBridge(commands.Cog):
 
                 # Check if we're looking for a node ID (hex with ! prefix)
                 if node_identifier.startswith('!'):
-                    hex_id = node_identifier.lower()
+                    hex_id = self.normalize_node_hex(node_identifier)
                     c.execute("""
                         SELECT node_id, node_id_hex, node_num, long_name 
                         FROM nodes
-                        WHERE lower(node_id_hex) = ?
+                        WHERE node_id_hex = ?
                     """, (hex_id,))
                     result = c.fetchone()
                     if result:
