@@ -359,6 +359,11 @@ class MqttBridge(commands.Cog):
         
         # Process the packet only if decryption succeeded (or wasn't needed) and it has decoded data
         if decryption_success and mp.HasField("decoded"):
+            # Update city for every packet based on MQTT topic
+            topic_parts = msg.topic.split('/')
+            if len(topic_parts) >= 4:
+                await self.update_node_city(str(getattr(mp, "from", 0)), topic_parts[3])
+
             if mp.decoded.portnum == portnums_pb2.TEXT_MESSAGE_APP:
                 # Check if this message is a duplicate before proceeding
                 is_duplicate = await self.is_duplicate_message(mp)
@@ -937,6 +942,23 @@ class MqttBridge(commands.Cog):
 
         except Exception as e:
             print(f"Error updating node position: {str(e)}")
+
+    async def update_node_city(self, node_id: str, city: str):
+        """Update the city for a node based on the MQTT topic it was heard on"""
+        try:
+            with self.get_db() as conn:
+                c = conn.cursor()
+                c.execute("SELECT node_id FROM nodes WHERE node_id = ?", (node_id,))
+                if c.fetchone():
+                    c.execute("""
+                        INSERT INTO node_positions (node_id, timestamp, latitude, longitude, altitude, city)
+                        VALUES (?, ?, NULL, NULL, NULL, ?)
+                        ON CONFLICT(node_id) DO UPDATE SET
+                            city = excluded.city
+                    """, (node_id, datetime.now().isoformat(), city))
+                    conn.commit()
+        except Exception as e:
+            print(f"Error updating node city: {str(e)}")
 
     async def process_traceroute(self, mp, se):
         """Process traceroute"""
