@@ -398,7 +398,7 @@ class MqttBridge(commands.Cog):
 
             if mp.decoded.portnum == portnums_pb2.POSITION_APP:
                 try:
-                    await self.process_position(mp)
+                    await self.process_position(mp, msg.topic)
                 except Exception as e:
                     print(f"Error parsing position data: {str(e)}")
 
@@ -649,9 +649,10 @@ class MqttBridge(commands.Cog):
                 
                 # Get node info
                 c.execute("""
-                    SELECT n.node_id, n.node_num, n.node_id_hex, n.long_name, n.short_name, o.discord_id, o.notifications
+                    SELECT n.node_id, n.node_num, n.node_id_hex, n.long_name, n.short_name, o.discord_id, o.notifications, np.city
                     FROM nodes n
                     LEFT JOIN node_owners o ON n.node_id = o.node_id
+                    LEFT JOIN node_positions np ON n.node_id = np.node_id
                     WHERE n.node_id = ?
                 """, (str(sender_int),))
                 
@@ -667,7 +668,8 @@ class MqttBridge(commands.Cog):
                         "owner": {
                             "discord_id": node_row[5],
                             "notifications": bool(node_row[6])
-                            } if node_row[5] else None
+                            } if node_row[5] else None,
+                        "city": node_row[7]
                     }
 
                 # Get Gateway node info if available
@@ -702,6 +704,8 @@ class MqttBridge(commands.Cog):
             )
 
             embed.add_field(name="Channel", value=channel, inline=True)
+            if node_info.get("city"):
+                embed.add_field(name="City", value=node_info["city"], inline=True)
             if "owner" in node_info and node_info["owner"]:
                 owner_info = node_info["owner"]
                 embed.add_field(
@@ -860,7 +864,7 @@ class MqttBridge(commands.Cog):
         except Exception as e:
             print(f"Error updating node telemetry: {str(e)}")
 
-    async def process_position(self, mp):
+    async def process_position(self, mp, topic: str = None):
         """Process position information and save it to the node's entry in the database"""
         try:
             # Parse the position from the payload
@@ -882,6 +886,12 @@ class MqttBridge(commands.Cog):
                 position_data["longitude"] = position.longitude_i / 10000000.0
             if position.HasField("altitude"):
                 position_data["altitude"] = position.altitude
+
+            # Extract city from the MQTT topic (e.g. msh/US/AZ/SomeCityName/...)
+            if topic:
+                parts = topic.split('/')
+                if len(parts) >= 4:
+                    position_data["city"] = parts[3]
 
             # Update the node's position information in the database
             await self.update_node_position(node_id_str, position_data)
@@ -905,15 +915,22 @@ class MqttBridge(commands.Cog):
 
                     # Create or update nodes position
                     c.execute("""
-                        INSERT OR REPLACE INTO node_positions (
-                            node_id, timestamp, latitude, longitude, altitude
-                        ) VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO node_positions (
+                            node_id, timestamp, latitude, longitude, altitude, city
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(node_id) DO UPDATE SET
+                            timestamp = excluded.timestamp,
+                            latitude = COALESCE(excluded.latitude, latitude),
+                            longitude = COALESCE(excluded.longitude, longitude),
+                            altitude = COALESCE(excluded.altitude, altitude),
+                            city = COALESCE(excluded.city, city)
                     """, (
                         node_id,
                         position_data.get("timestamp", datetime.now().isoformat()),
                         position_data.get("latitude"),
                         position_data.get("longitude"),
-                        position_data.get("altitude")
+                        position_data.get("altitude"),
+                        position_data.get("city")
                     ))
 
                 conn.commit()
@@ -946,9 +963,10 @@ class MqttBridge(commands.Cog):
 
                     # Get Sender node info
                     c.execute("""
-                        SELECT n.node_id, n.node_num, node_id_hex, short_name, long_name, o.discord_id, o.notifications
+                        SELECT n.node_id, n.node_num, node_id_hex, short_name, long_name, o.discord_id, o.notifications, np.city
                         FROM nodes n
                         LEFT JOIN node_owners o ON n.node_id = o.node_id
+                        LEFT JOIN node_positions np ON n.node_id = np.node_id
                         WHERE n.node_id = ?
                     """, (str(sender_int),))
 
@@ -965,7 +983,8 @@ class MqttBridge(commands.Cog):
                             "owner": {
                                 "discord_id": sender_row[5],
                                 "notifications": bool(sender_row[6])
-                                } if sender_row[5] else None
+                                } if sender_row[5] else None,
+                            "city": sender_row[7]
                         }
 
                     # Get Receiver node info
@@ -1022,6 +1041,8 @@ class MqttBridge(commands.Cog):
 
                 embed.add_field(name="From", value=f"{sender_info.get('long_name', 'Unknown')} ({sender_info.get('node_id_hex', 'Unknown')})", inline=True)
                 embed.add_field(name="To", value=f"{receiver_info.get('long_name', 'Unknown')} ({receiver_info.get('node_id_hex', 'Unknown')})", inline=True)
+                if sender_info.get("city"):
+                    embed.add_field(name="City", value=sender_info["city"], inline=True)
                 if via is not None:
                     embed.add_field(
                         name="Via Gateway", 
@@ -1873,7 +1894,7 @@ class MqttBridge(commands.Cog):
 
                 # Get latest position
                 c.execute("""
-                    SELECT latitude, longitude, altitude, timestamp
+                    SELECT latitude, longitude, altitude, timestamp, city
                     FROM node_positions
                     WHERE node_id = ?
                 """, (found_node_data["node_id"],))
@@ -1884,7 +1905,8 @@ class MqttBridge(commands.Cog):
                         "latitude": position[0],
                         "longitude": position[1],
                         "altitude": position[2],
-                        "timestamp": position[3]
+                        "timestamp": position[3],
+                        "city": position[4]
                     }
                 
                 conn.close()
@@ -1946,6 +1968,8 @@ class MqttBridge(commands.Cog):
                     position = found_node_data["position"]
                     position_text = ""
 
+                    if position.get("city"):
+                        position_text += f"City: {position['city']}\n"
                     if position.get("latitude"):
                         position_text += f"Latitude: {position['latitude']}\n"
                     if position.get("longitude"):
