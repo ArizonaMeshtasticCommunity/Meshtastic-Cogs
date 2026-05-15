@@ -401,7 +401,7 @@ class MqttBridge(commands.Cog):
 
                 if reply_id > 0 and emoji_flag != 0 and discord_msg_id:
                     # Emoji Reaction (Tapback)
-                    await self.append_reaction_to_discord(mp, se, message_text, discord_msg_id)
+                    await self.append_reaction_to_discord(mp, message_text, discord_msg_id)
                 else:
                     # Threaded Reply or Standard Message
                     await self.send_to_discord(mp, se, message_text, reply_to_discord_id=discord_msg_id if reply_id > 0 and emoji_flag == 0 else None)
@@ -749,7 +749,7 @@ class MqttBridge(commands.Cog):
                 if reply_to_discord_id:
                     try:
                         reference = await self.messages_channel.fetch_message(reply_to_discord_id)
-                    except discord.NotFound:
+                    except (discord.NotFound, discord.HTTPException):
                         pass
                 
                 content = f"<@{node_info['owner']['discord_id']}>" if "owner" in node_info and node_info["owner"] and node_info["owner"]["notifications"] else None
@@ -776,7 +776,7 @@ class MqttBridge(commands.Cog):
             import traceback
             print(traceback.format_exc())
 
-    async def append_reaction_to_discord(self, mp, se, message_text, discord_msg_id):
+    async def append_reaction_to_discord(self, mp, message_text, discord_msg_id):
         """Append an emoji reaction to the original Discord message's embed"""
         try:
             if not self.messages_channel:
@@ -784,7 +784,7 @@ class MqttBridge(commands.Cog):
 
             try:
                 original_msg = await self.messages_channel.fetch_message(discord_msg_id)
-            except discord.NotFound:
+            except (discord.NotFound, discord.HTTPException):
                 return
 
             if not original_msg.embeds:
@@ -814,12 +814,19 @@ class MqttBridge(commands.Cog):
                     reactions_idx = i
                     break
             
+            REACTIONS_FIELD_LIMIT = 1024
+
             if reactions_idx >= 0:
                 # Append to existing
                 current_value = embed.fields[reactions_idx].value
-                embed.set_field_at(reactions_idx, name="Reactions", value=f"{current_value}\n{reaction_str}", inline=False)
+                new_value = f"{current_value}\n{reaction_str}"
+                if len(new_value) > REACTIONS_FIELD_LIMIT:
+                    new_value = new_value[:REACTIONS_FIELD_LIMIT - 3] + "..."
+                embed.set_field_at(reactions_idx, name="Reactions", value=new_value, inline=False)
             else:
                 # Add new field
+                if len(reaction_str) > REACTIONS_FIELD_LIMIT:
+                    reaction_str = reaction_str[:REACTIONS_FIELD_LIMIT - 3] + "..."
                 embed.add_field(name="Reactions", value=reaction_str, inline=False)
                 
             await original_msg.edit(embed=embed)
