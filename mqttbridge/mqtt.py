@@ -800,12 +800,13 @@ class MqttBridge(commands.Cog):
             
             with self.get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT long_name FROM nodes WHERE node_id = ?", (str(sender_int),))
+                c.execute("SELECT short_name FROM nodes WHERE node_id = ?", (str(sender_int),))
                 node_row = c.fetchone()
                 if node_row and node_row[0]:
                     node_name = node_row[0]
 
-            reaction_str = f"{message_text} - {node_name} (!{sender_id})"
+            settings = await self.config.all()
+            reaction_str = f"{message_text} - [{node_name}]({settings['meshview_domain']}/packet/{mp.id})"
 
             # Find existing Reactions field
             reactions_idx = -1
