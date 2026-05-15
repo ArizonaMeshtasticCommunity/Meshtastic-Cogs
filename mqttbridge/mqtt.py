@@ -1224,8 +1224,8 @@ class MqttBridge(commands.Cog):
                         c.execute("""
                             UPDATE traceroute
                             SET discord_message_id = ?
-                            WHERE trace_id = ? AND from_id = ? AND to_id = ?
-                        """, (message.id, mp.id, getattr(mp, "from", 0), getattr(mp, "to", 0)))
+                            WHERE trace_id = ?
+                        """, (message.id, mp.id))
                         conn.commit()
                 else:
                     return
@@ -1238,7 +1238,7 @@ class MqttBridge(commands.Cog):
                     c.execute("SELECT discord_message_id FROM traceroute WHERE trace_id = ?", (original_trace_id,))
                     row = c.fetchone()
                     if row and row[0]:
-                        discord_msg_id = row[0]
+                        discord_msg_id = int(row[0])
                 
                 # Parse RouteDiscovery
                 route_discovery = mesh_pb2.RouteDiscovery()
@@ -1266,22 +1266,25 @@ class MqttBridge(commands.Cog):
                     try:
                         original_msg = await self.traceroute_channel.fetch_message(discord_msg_id)
                         if original_msg.embeds:
-                            embed = original_msg.embeds[0]
+                            # Create a new embed from the original to ensure safe editing
+                            new_embed = discord.Embed.from_dict(original_msg.embeds[0].to_dict())
+                            
                             # Update Description
-                            desc = embed.description
+                            desc = new_embed.description
                             if desc:
                                 desc = desc.replace("Direction: SEND", "Direction: REPLY (Complete)")
                             else:
                                 desc = "Direction: REPLY (Complete)"
-                            embed.description = desc
+                            new_embed.description = desc
                             
-                            embed.add_field(name="Route Taken", value=route_display, inline=False)
-                            await original_msg.edit(embed=embed)
+                            new_embed.add_field(name="Route Taken", value=route_display, inline=False)
+                            await original_msg.edit(embed=new_embed)
                             # Flag that we successfully edited the message
                         else:
                             discord_msg_id = None # Fallback to new message
-                    except (discord.NotFound, discord.HTTPException):
-                        # Fallback if message not found
+                    except (discord.NotFound, discord.HTTPException) as e:
+                        print(f"Error editing original traceroute message: {e}")
+                        # Fallback if message not found or edit fails
                         discord_msg_id = None
                 
                 # If we couldn't find/edit the message, post a new one
