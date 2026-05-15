@@ -1419,12 +1419,12 @@ class MqttBridge(commands.Cog):
                     timestamp
                 ))
 
-                # Prune old messages if we have too many (keep last 50)
+                # Prune old messages if we have too many (keep last 10000)
                 c.execute("SELECT COUNT(*) FROM message_history")
                 count = c.fetchone()[0]
 
-                if count > 50:
-                    # Delete oldest messages to keep only the newest 45
+                if count > 10000:
+                    # Delete oldest messages to keep only the newest 9500
                     c.execute("""
                         DELETE FROM message_history 
                         WHERE timestamp IN (
@@ -1432,7 +1432,7 @@ class MqttBridge(commands.Cog):
                             ORDER BY timestamp ASC 
                             LIMIT ?
                         )
-                    """, (count - 45,))
+                    """, (count - 9500,))
 
                 conn.commit()
             
