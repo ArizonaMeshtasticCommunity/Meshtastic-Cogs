@@ -225,6 +225,12 @@ class MqttBridge(commands.Cog):
                     WHERE length(node_id_hex) < 9
                 """)
 
+                # Add discord_message_id to traceroute if it doesn't exist
+                try:
+                    c.execute("ALTER TABLE traceroute ADD COLUMN discord_message_id INTEGER")
+                except sqlite3.OperationalError:
+                    pass
+
                 conn.commit()
         except Exception as e:
             print(f"Error setting up database: {str(e)}")
@@ -806,7 +812,7 @@ class MqttBridge(commands.Cog):
                     node_name = node_row[0]
 
             settings = await self.config.all()
-            reaction_str = f"{message_text} - [{node_name}]({settings['meshview_domain']}/packet/{mp.id})"
+            user_link = f"[{node_name}]({settings['meshview_domain']}/packet/{mp.id})"
 
             # Find existing Reactions field
             reactions_idx = -1
@@ -818,14 +824,28 @@ class MqttBridge(commands.Cog):
             REACTIONS_FIELD_LIMIT = 1024
 
             if reactions_idx >= 0:
-                # Append to existing
                 current_value = embed.fields[reactions_idx].value
-                new_value = f"{current_value}\n{reaction_str}"
+                lines = current_value.split('\n')
+                
+                updated = False
+                for i, line in enumerate(lines):
+                    if line.startswith(f"{message_text} - ") or line.startswith(f"{message_text}- "):
+                        lines[i] = f"{line}, {user_link}"
+                        updated = True
+                        break
+                
+                if not updated:
+                    lines.append(f"{message_text} - {user_link}")
+                
+                # Sort lines natively
+                lines.sort()
+                new_value = '\n'.join(lines)
+
                 if len(new_value) > REACTIONS_FIELD_LIMIT:
                     new_value = new_value[:REACTIONS_FIELD_LIMIT - 3] + "..."
                 embed.set_field_at(reactions_idx, name="Reactions", value=new_value, inline=False)
             else:
-                # Add new field
+                reaction_str = f"{message_text} - {user_link}"
                 if len(reaction_str) > REACTIONS_FIELD_LIMIT:
                     reaction_str = reaction_str[:REACTIONS_FIELD_LIMIT - 3] + "..."
                 embed.add_field(name="Reactions", value=reaction_str, inline=False)
@@ -1195,11 +1215,86 @@ class MqttBridge(commands.Cog):
 
                 if self.traceroute_channel:
                     if "owner" in sender_info and sender_info['owner'] and sender_info['owner']['notifications']:
-                        await self.traceroute_channel.send(f"<@{sender_info['owner']['discord_id']}>", embed=embed)
+                        message = await self.traceroute_channel.send(f"<@{sender_info['owner']['discord_id']}>", embed=embed)
                     else:
-                        await self.traceroute_channel.send(embed=embed)
+                        message = await self.traceroute_channel.send(embed=embed)
+                        
+                    with self.get_db() as conn:
+                        c = conn.cursor()
+                        c.execute("""
+                            UPDATE traceroute
+                            SET discord_message_id = ?
+                            WHERE trace_id = ? AND from_id = ? AND to_id = ?
+                        """, (message.id, mp.id, getattr(mp, "from", 0), getattr(mp, "to", 0)))
+                        conn.commit()
                 else:
                     return
+
+            elif trace_direction == "REPLY":
+                original_trace_id = mp.decoded.request_id
+                discord_msg_id = None
+                with self.get_db() as conn:
+                    c = conn.cursor()
+                    c.execute("SELECT discord_message_id FROM traceroute WHERE trace_id = ?", (original_trace_id,))
+                    row = c.fetchone()
+                    if row and row[0]:
+                        discord_msg_id = row[0]
+                
+                # Parse RouteDiscovery
+                route_discovery = mesh_pb2.RouteDiscovery()
+                route_names = []
+                try:
+                    route_discovery.ParseFromString(mp.decoded.payload)
+                    with self.get_db() as conn:
+                        c = conn.cursor()
+                        for hop_num in route_discovery.route:
+                            hop_str = str(hop_num)
+                            c.execute("SELECT short_name, node_id_hex FROM nodes WHERE node_id = ?", (hop_str,))
+                            node_row = c.fetchone()
+                            if node_row and node_row[0]:
+                                route_names.append(node_row[0])
+                            elif node_row and node_row[1]:
+                                route_names.append(node_row[1])
+                            else:
+                                route_names.append(f"!{format(hop_num, '08x')}")
+                except Exception as e:
+                    print(f"Error parsing RouteDiscovery: {e}")
+
+                route_display = " → ".join(route_names) if route_names else "Unknown"
+
+                if discord_msg_id and self.traceroute_channel:
+                    try:
+                        original_msg = await self.traceroute_channel.fetch_message(discord_msg_id)
+                        if original_msg.embeds:
+                            embed = original_msg.embeds[0]
+                            # Update Description
+                            desc = embed.description
+                            if desc:
+                                desc = desc.replace("Direction: SEND", "Direction: REPLY (Complete)")
+                            else:
+                                desc = "Direction: REPLY (Complete)"
+                            embed.description = desc
+                            
+                            embed.add_field(name="Route Taken", value=route_display, inline=False)
+                            await original_msg.edit(embed=embed)
+                            # Flag that we successfully edited the message
+                        else:
+                            discord_msg_id = None # Fallback to new message
+                    except (discord.NotFound, discord.HTTPException):
+                        # Fallback if message not found
+                        discord_msg_id = None
+                
+                # If we couldn't find/edit the message, post a new one
+                if not discord_msg_id and self.traceroute_channel:
+                    settings = await self.config.all()
+                    embed = discord.Embed(
+                        title=f"Traceroute Reply Received",
+                        description=f"Response to trace ID [{original_trace_id}]({settings['meshview_domain']}/packet/{original_trace_id})",
+                        color=discord.Color.purple(),
+                        timestamp=datetime.now()
+                    )
+                    embed.add_field(name="Route Taken", value=route_display, inline=False)
+                    await self.traceroute_channel.send(embed=embed)
 
         except Exception as e:
             print(f"Error processing traceroute: {str(e)}")
