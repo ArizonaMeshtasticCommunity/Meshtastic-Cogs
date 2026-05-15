@@ -387,7 +387,24 @@ class MqttBridge(commands.Cog):
                     await self.check_claim_code(mp)
                     return
             
-                await self.send_to_discord(mp, se, message_text)
+                reply_id = getattr(mp.decoded, 'reply_id', 0)
+                emoji_flag = getattr(mp.decoded, 'emoji', 0)
+
+                discord_msg_id = None
+                if reply_id > 0:
+                    with self.get_db() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT discord_message_id FROM message_history WHERE message_id = ?", (reply_id,))
+                        result = c.fetchone()
+                        if result and result[0]:
+                            discord_msg_id = result[0]
+
+                if reply_id > 0 and emoji_flag != 0 and discord_msg_id:
+                    # Emoji Reaction (Tapback)
+                    await self.append_reaction_to_discord(mp, message_text, discord_msg_id)
+                else:
+                    # Threaded Reply or Standard Message
+                    await self.send_to_discord(mp, se, message_text, reply_to_discord_id=discord_msg_id if reply_id > 0 and emoji_flag == 0 else None)
 
             if mp.decoded.portnum == portnums_pb2.NODEINFO_APP:
                 try:
@@ -635,7 +652,7 @@ class MqttBridge(commands.Cog):
         except Exception as e:
             print(f"Error saving node to database: {str(e)}")
 
-    async def send_to_discord(self, mp, se, message_text):
+    async def send_to_discord(self, mp, se, message_text, reply_to_discord_id=None):
         """Send a decoded Meshtastic message to the configured Discord channel"""
         try:
             # Process channel information
@@ -728,10 +745,19 @@ class MqttBridge(commands.Cog):
                 
             # Send to Discord
             if self.messages_channel:
-                if "owner" in node_info and node_info["owner"] and node_info["owner"]["notifications"]:
-                    message = await self.messages_channel.send(f"<@{node_info['owner']['discord_id']}>", embed=embed)
+                reference = None
+                if reply_to_discord_id:
+                    try:
+                        reference = await self.messages_channel.fetch_message(reply_to_discord_id)
+                    except (discord.NotFound, discord.HTTPException):
+                        pass
+                
+                content = f"<@{node_info['owner']['discord_id']}>" if "owner" in node_info and node_info["owner"] and node_info["owner"]["notifications"] else None
+
+                if reference:
+                    message = await self.messages_channel.send(content=content, embed=embed, reference=reference)
                 else:
-                    message = await self.messages_channel.send(embed=embed)
+                    message = await self.messages_channel.send(content=content, embed=embed)
 
                 with self.get_db() as conn:
                     c = conn.cursor()
@@ -749,6 +775,65 @@ class MqttBridge(commands.Cog):
             print(f"Error formatting text message: {e}")
             import traceback
             print(traceback.format_exc())
+
+    async def append_reaction_to_discord(self, mp, message_text, discord_msg_id):
+        """Append an emoji reaction to the original Discord message's embed"""
+        try:
+            if not self.messages_channel:
+                return
+
+            try:
+                original_msg = await self.messages_channel.fetch_message(discord_msg_id)
+            except (discord.NotFound, discord.HTTPException):
+                return
+
+            if not original_msg.embeds:
+                return
+            
+            embed = original_msg.embeds[0]
+
+            # Get sender info
+            sender_int = getattr(mp, "from") if hasattr(mp, "from") else 0
+            sender_id = format(sender_int, '08x')
+
+            node_name = f"!{sender_id}"
+            
+            with self.get_db() as conn:
+                c = conn.cursor()
+                c.execute("SELECT short_name FROM nodes WHERE node_id = ?", (str(sender_int),))
+                node_row = c.fetchone()
+                if node_row and node_row[0]:
+                    node_name = node_row[0]
+
+            settings = await self.config.all()
+            reaction_str = f"{message_text} - [{node_name}]({settings['meshview_domain']}/packet/{mp.id})"
+
+            # Find existing Reactions field
+            reactions_idx = -1
+            for i, field in enumerate(embed.fields):
+                if field.name == "Reactions":
+                    reactions_idx = i
+                    break
+            
+            REACTIONS_FIELD_LIMIT = 1024
+
+            if reactions_idx >= 0:
+                # Append to existing
+                current_value = embed.fields[reactions_idx].value
+                new_value = f"{current_value}\n{reaction_str}"
+                if len(new_value) > REACTIONS_FIELD_LIMIT:
+                    new_value = new_value[:REACTIONS_FIELD_LIMIT - 3] + "..."
+                embed.set_field_at(reactions_idx, name="Reactions", value=new_value, inline=False)
+            else:
+                # Add new field
+                if len(reaction_str) > REACTIONS_FIELD_LIMIT:
+                    reaction_str = reaction_str[:REACTIONS_FIELD_LIMIT - 3] + "..."
+                embed.add_field(name="Reactions", value=reaction_str, inline=False)
+                
+            await original_msg.edit(embed=embed)
+            
+        except Exception as e:
+            print(f"Error appending reaction to Discord: {e}")
 
     async def process_telemetry(self, mp):
         """Process telemetry information and save it to the database"""
