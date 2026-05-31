@@ -53,6 +53,7 @@ The MqttBridge cog connects your Discord server to a Meshtastic MQTT broker, ena
   - SNR (Signal-to-Noise Ratio) data
   - Network topology insights
 - **MeshView Integration**: Direct links to visualize routes on MeshView
+- **Graphs Service Integration**: Multiple graph views for route analysis (full, outbound, reply)
 
 ### Node Ownership System
 - **Node Claiming**: Users can claim ownership of their nodes through a secure verification process
@@ -86,6 +87,7 @@ The MqttBridge cog connects your Discord server to a Meshtastic MQTT broker, ena
 - **`!mqtt meshviewdomain <domain>`**: Set MeshView instance URL for packet links
 - **`!mqtt mapdomain <domain>`**: Set map service URL for location links
 - **`!mqtt metricsdomain <domain>`**: Set metrics dashboard URL
+- **`!mqtt graphsdomain <domain>`**: Set graphs service URL for traceroute visualizations
 
 #### Node Administration (`!nodeadmin` commands)
 - **`!nodeadmin unclaim <node_id>`**: Remove ownership from a node
