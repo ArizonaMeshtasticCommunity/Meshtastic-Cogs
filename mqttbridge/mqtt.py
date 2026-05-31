@@ -38,6 +38,7 @@ class MqttBridge(commands.Cog):
             "meshview_domain": None,
             "map_domain": None,
             "metrics_domain": None,
+            "graphs_domain": None,
             "enabled": False
         }
 
@@ -1208,7 +1209,13 @@ class MqttBridge(commands.Cog):
                     name="Links",
                     value=(
                         f"[View Packet on MeshView]({settings['meshview_domain']}/packet/{mp.id})\n"
-                        f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})\n"
+                        + ( "View graphs: "
+                            f"[Full Graph]({settings['graphs_domain']}/graph/trace/{mp.id}) | "
+                            f"[Outbound]({settings['graphs_domain']}/graph/trace/{mp.id}?direction=out) | "
+                            f"[Reply]({settings['graphs_domain']}/graph/trace/{mp.id}?direction=in)"
+                            if settings.get('graphs_domain')
+                            else f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})"
+                        )
                     ),
                     inline=False
                 )
@@ -1741,6 +1748,12 @@ class MqttBridge(commands.Cog):
         await self.config.metrics_domain.set(domain)
         await ctx.send(f"Links will use metrics domain: {domain}")
 
+    @mqtt.command(name="graphsdomain")
+    async def set_graphs_domain(self, ctx: commands.Context, domain: str):
+        """Set the graphs domain for traceroute links"""
+        await self.config.graphs_domain.set(domain)
+        await ctx.send(f"Graphs links will use domain: {domain}")
+
     @mqtt.command(name="enable")
     async def enable_bridge(self, ctx: commands.Context):
         """Enable the MQTT bridge"""
@@ -1795,6 +1808,9 @@ class MqttBridge(commands.Cog):
 
         if settings["metrics_domain"]:
             embed.add_field(name="Metrics Domain", value=settings["metrics_domain"])
+
+        if settings["graphs_domain"]:
+            embed.add_field(name="Graphs Domain", value=settings["graphs_domain"])
         
         
         await ctx.send(embed=embed)
