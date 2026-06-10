@@ -1249,7 +1249,6 @@ class MqttBridge(commands.Cog):
                 
                 # Parse RouteDiscovery
                 route_discovery = mesh_pb2.RouteDiscovery()
-                route_names = []
                 try:
                     route_discovery.ParseFromString(mp.decoded.payload)
                     with self.get_db() as conn:
@@ -1264,24 +1263,34 @@ class MqttBridge(commands.Cog):
                                 return node_row[1]
                             return f"!{format(n_id, '08x')}"
 
-                        # Add origin (the node that sent the original trace request)
                         trace_origin = getattr(mp, "to", 0)
-                        if trace_origin:
-                            route_names.append(get_node_name(trace_origin))
-
-                        # Add intermediaries
-                        for hop_num in route_discovery.route:
-                            route_names.append(get_node_name(hop_num))
-                            
-                        # Add destination (the node that replied to the trace)
                         trace_dest = getattr(mp, "from", 0)
+                        
+                        # Get nodes in order
+                        nodes_in_order = []
+                        if trace_origin:
+                            nodes_in_order.append(get_node_name(trace_origin))
+                        for hop_num in route_discovery.route:
+                            nodes_in_order.append(get_node_name(hop_num))
                         if trace_dest:
-                            route_names.append(get_node_name(trace_dest))
+                            nodes_in_order.append(get_node_name(trace_dest))
+
+                        # Check if we have matching SNR data
+                        snrs = route_discovery.snr_towards
+                        
+                        if len(snrs) == len(route_discovery.route) + 1 and len(nodes_in_order) >= 2:
+                            # Format with SNR: Node1 --(snr)→ Node2
+                            route_parts = [nodes_in_order[0]]
+                            for i, snr in enumerate(snrs):
+                                route_parts.append(f"--({snr})→ {nodes_in_order[i+1]}")
+                            route_display = " ".join(route_parts)
+                        else:
+                            # Fallback without SNR
+                            route_display = " → ".join(nodes_in_order) if nodes_in_order else "Unknown"
 
                 except Exception as e:
                     print(f"Error parsing RouteDiscovery: {e}")
-
-                route_display = " → ".join(route_names) if route_names else "Unknown"
+                    route_display = "Unknown"
 
                 if discord_msg_id and self.traceroute_channel:
                     try:
