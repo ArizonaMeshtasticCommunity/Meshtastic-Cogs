@@ -1254,16 +1254,30 @@ class MqttBridge(commands.Cog):
                     route_discovery.ParseFromString(mp.decoded.payload)
                     with self.get_db() as conn:
                         c = conn.cursor()
-                        for hop_num in route_discovery.route:
-                            hop_str = str(hop_num)
-                            c.execute("SELECT short_name, node_id_hex FROM nodes WHERE node_id = ?", (hop_str,))
+                        
+                        def get_node_name(n_id):
+                            c.execute("SELECT short_name, node_id_hex FROM nodes WHERE node_id = ?", (str(n_id),))
                             node_row = c.fetchone()
                             if node_row and node_row[0]:
-                                route_names.append(node_row[0])
+                                return node_row[0]
                             elif node_row and node_row[1]:
-                                route_names.append(node_row[1])
-                            else:
-                                route_names.append(f"!{format(hop_num, '08x')}")
+                                return node_row[1]
+                            return f"!{format(n_id, '08x')}"
+
+                        # Add origin (the node that sent the original trace request)
+                        trace_origin = getattr(mp, "to", 0)
+                        if trace_origin:
+                            route_names.append(get_node_name(trace_origin))
+
+                        # Add intermediaries
+                        for hop_num in route_discovery.route:
+                            route_names.append(get_node_name(hop_num))
+                            
+                        # Add destination (the node that replied to the trace)
+                        trace_dest = getattr(mp, "from", 0)
+                        if trace_dest:
+                            route_names.append(get_node_name(trace_dest))
+
                 except Exception as e:
                     print(f"Error parsing RouteDiscovery: {e}")
 
@@ -1273,8 +1287,8 @@ class MqttBridge(commands.Cog):
                     try:
                         original_msg = await self.traceroute_channel.fetch_message(discord_msg_id)
                         if original_msg.embeds:
-                            # Create a new embed from the original to ensure safe editing
-                            new_embed = discord.Embed.from_dict(original_msg.embeds[0].to_dict())
+                            # Create a copy of the embed to ensure safe editing
+                            new_embed = original_msg.embeds[0].copy()
                             
                             # Update Description
                             desc = new_embed.description
@@ -1284,12 +1298,18 @@ class MqttBridge(commands.Cog):
                                 desc = "Direction: REPLY (Complete)"
                             new_embed.description = desc
                             
-                            new_embed.add_field(name="Route Taken", value=route_display, inline=False)
+                            # Update or add the "Route Taken" field
+                            route_field_index = next((index for (index, field) in enumerate(new_embed.fields) if field.name == "Route Taken"), None)
+                            if route_field_index is not None:
+                                new_embed.set_field_at(route_field_index, name="Route Taken", value=route_display, inline=False)
+                            else:
+                                new_embed.add_field(name="Route Taken", value=route_display, inline=False)
+
                             await original_msg.edit(embed=new_embed)
                             # Flag that we successfully edited the message
                         else:
                             discord_msg_id = None # Fallback to new message
-                    except (discord.NotFound, discord.HTTPException) as e:
+                    except Exception as e:
                         print(f"Error editing original traceroute message: {e}")
                         # Fallback if message not found or edit fails
                         discord_msg_id = None
