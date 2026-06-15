@@ -1249,32 +1249,55 @@ class MqttBridge(commands.Cog):
                 
                 # Parse RouteDiscovery
                 route_discovery = mesh_pb2.RouteDiscovery()
-                route_names = []
                 try:
                     route_discovery.ParseFromString(mp.decoded.payload)
                     with self.get_db() as conn:
                         c = conn.cursor()
-                        for hop_num in route_discovery.route:
-                            hop_str = str(hop_num)
-                            c.execute("SELECT short_name, node_id_hex FROM nodes WHERE node_id = ?", (hop_str,))
+                        
+                        def get_node_name(n_id):
+                            c.execute("SELECT short_name, node_id_hex FROM nodes WHERE node_id = ?", (str(n_id),))
                             node_row = c.fetchone()
                             if node_row and node_row[0]:
-                                route_names.append(node_row[0])
+                                return node_row[0]
                             elif node_row and node_row[1]:
-                                route_names.append(node_row[1])
-                            else:
-                                route_names.append(f"!{format(hop_num, '08x')}")
+                                return node_row[1]
+                            return f"!{format(n_id, '08x')}"
+
+                        trace_origin = getattr(mp, "to", 0)
+                        trace_dest = getattr(mp, "from", 0)
+                        
+                        # Get nodes in order
+                        nodes_in_order = []
+                        if trace_origin:
+                            nodes_in_order.append(get_node_name(trace_origin))
+                        for hop_num in route_discovery.route:
+                            nodes_in_order.append(get_node_name(hop_num))
+                        if trace_dest:
+                            nodes_in_order.append(get_node_name(trace_dest))
+
+                        # Check if we have matching SNR data
+                        snrs = route_discovery.snr_towards
+                        
+                        if len(snrs) == len(route_discovery.route) + 1 and len(nodes_in_order) >= 2:
+                            # Format with SNR: Node1 --(snr)→ Node2
+                            route_parts = [nodes_in_order[0]]
+                            for i, snr in enumerate(snrs):
+                                route_parts.append(f"--({snr})→ {nodes_in_order[i+1]}")
+                            route_display = " ".join(route_parts)
+                        else:
+                            # Fallback without SNR
+                            route_display = " → ".join(nodes_in_order) if nodes_in_order else "Unknown"
+
                 except Exception as e:
                     print(f"Error parsing RouteDiscovery: {e}")
-
-                route_display = " → ".join(route_names) if route_names else "Unknown"
+                    route_display = "Unknown"
 
                 if discord_msg_id and self.traceroute_channel:
                     try:
                         original_msg = await self.traceroute_channel.fetch_message(discord_msg_id)
                         if original_msg.embeds:
-                            # Create a new embed from the original to ensure safe editing
-                            new_embed = discord.Embed.from_dict(original_msg.embeds[0].to_dict())
+                            # Create a copy of the embed to ensure safe editing
+                            new_embed = original_msg.embeds[0].copy()
                             
                             # Update Description
                             desc = new_embed.description
@@ -1284,12 +1307,18 @@ class MqttBridge(commands.Cog):
                                 desc = "Direction: REPLY (Complete)"
                             new_embed.description = desc
                             
-                            new_embed.add_field(name="Route Taken", value=route_display, inline=False)
+                            # Update or add the "Route Taken" field
+                            route_field_index = next((index for (index, field) in enumerate(new_embed.fields) if field.name == "Route Taken"), None)
+                            if route_field_index is not None:
+                                new_embed.set_field_at(route_field_index, name="Route Taken", value=route_display, inline=False)
+                            else:
+                                new_embed.add_field(name="Route Taken", value=route_display, inline=False)
+
                             await original_msg.edit(embed=new_embed)
                             # Flag that we successfully edited the message
                         else:
                             discord_msg_id = None # Fallback to new message
-                    except (discord.NotFound, discord.HTTPException) as e:
+                    except Exception as e:
                         print(f"Error editing original traceroute message: {e}")
                         # Fallback if message not found or edit fails
                         discord_msg_id = None
