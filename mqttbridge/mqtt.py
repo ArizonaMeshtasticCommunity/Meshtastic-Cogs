@@ -1240,12 +1240,18 @@ class MqttBridge(commands.Cog):
             elif trace_direction == "REPLY":
                 original_trace_id = mp.decoded.request_id
                 discord_msg_id = None
-                with self.get_db() as conn:
-                    c = conn.cursor()
-                    c.execute("SELECT discord_message_id FROM traceroute WHERE trace_id = ?", (original_trace_id,))
-                    row = c.fetchone()
-                    if row and row[0]:
-                        discord_msg_id = int(row[0])
+                
+                # Add a retry loop for race conditions when processing an MQTT backlog
+                for attempt in range(5):
+                    with self.get_db() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT discord_message_id FROM traceroute WHERE trace_id = ?", (original_trace_id,))
+                        row = c.fetchone()
+                        if row and row[0]:
+                            discord_msg_id = int(row[0])
+                            break
+                    if not discord_msg_id:
+                        await asyncio.sleep(1.0)
                 
                 # Parse RouteDiscovery
                 route_discovery = mesh_pb2.RouteDiscovery()
@@ -1279,14 +1285,16 @@ class MqttBridge(commands.Cog):
                         snrs = route_discovery.snr_towards
                         
                         if len(snrs) == len(route_discovery.route) + 1 and len(nodes_in_order) >= 2:
-                            # Format with SNR: Node1 --(snr)→ Node2
-                            route_parts = [nodes_in_order[0]]
+                            # Format with SNR: **Node1** ⇉ snr ⇉ **Node2**
+                            route_parts = [f"**{nodes_in_order[0]}**"]
                             for i, snr in enumerate(snrs):
-                                route_parts.append(f"--({snr})→ {nodes_in_order[i+1]}")
-                            route_display = " ".join(route_parts)
+                                snr_val = snr / 4.0
+                                route_parts.append(f" ⇉ {snr_val:g} ⇉ **{nodes_in_order[i+1]}**")
+                            route_display = "".join(route_parts)
                         else:
                             # Fallback without SNR
-                            route_display = " → ".join(nodes_in_order) if nodes_in_order else "Unknown"
+                            bold_nodes = [f"**{node}**" for node in nodes_in_order]
+                            route_display = " ⇉ ".join(bold_nodes) if bold_nodes else "Unknown"
 
                 except Exception as e:
                     print(f"Error parsing RouteDiscovery: {e}")
@@ -1314,12 +1322,18 @@ class MqttBridge(commands.Cog):
                             else:
                                 new_embed.add_field(name="Route Taken", value=route_display, inline=False)
 
-                            await original_msg.edit(embed=new_embed)
+                            await original_msg.edit(embeds=[new_embed])
                             # Flag that we successfully edited the message
                         else:
                             discord_msg_id = None # Fallback to new message
                     except Exception as e:
-                        print(f"Error editing original traceroute message: {e}")
+                        import traceback
+                        err_msg = f"Error editing original traceroute message: {e}"
+                        print(err_msg)
+                        try:
+                            await self.traceroute_channel.send(f"⚠️ Could not edit original traceroute message (does the bot have **Read Message History** permissions?): `{e}`")
+                        except Exception:
+                            pass
                         # Fallback if message not found or edit fails
                         discord_msg_id = None
                 
