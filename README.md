@@ -10,6 +10,7 @@ Once the bot is installed, run the following command in Discord:
 |----------|-------------|--------------|
 | **mqttbridge** | Bridge between MQTT and Discord for Meshtastic devices | • Real-time MQTT integration<br>• Node discovery & management<br>• Message bridging to Discord<br>• Telemetry & position tracking<br>• Traceroute visualization<br>• Node ownership system<br>• Administrative controls |
 | **strikes** | Comprehensive strike, warning, and note tracking system for server moderation | • Three case types: strikes, warnings, and mod notes<br>• Per-member Discord threads for case discussion<br>• Auto-updating anchor embed with case totals<br>• Configurable auto-actions (kick / ban) at strike thresholds<br>• DM notifications to actioned members<br>• Full case history with pagination<br>• Add, view, and remove individual cases |
+| **azmsh_welcome** | Automated Welcome messages. | Simply welcomes new members in the welcome channel. |
 
 ## Installation per Cog
 
@@ -23,4 +24,5 @@ For example:
 ```
 [p]cog install Meshtastic-Cogs mqttbridge
 [p]cog install Meshtastic-Cogs strikes
+[p]cog install Meshtastic-Cogs azmsh_welcome
 ```
