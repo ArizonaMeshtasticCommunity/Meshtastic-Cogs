@@ -1347,6 +1347,22 @@ class MqttBridge(commands.Cog):
                         timestamp=datetime.now()
                     )
                     embed.add_field(name="Route Taken", value=route_display, inline=False)
+                    
+                    embed.add_field(
+                        name="Links",
+                        value=(
+                            f"[View Packet on MeshView]({settings['meshview_domain']}/packet/{mp.id})\n"
+                            + ( "View graphs: "
+                                f"[Full Graph]({settings['graphs_domain']}/graph/trace/{original_trace_id}) | "
+                                f"[Outbound]({settings['graphs_domain']}/graph/trace/{original_trace_id}?direction=out) | "
+                                f"[Reply]({settings['graphs_domain']}/graph/trace/{original_trace_id}?direction=in)"
+                                if settings.get('graphs_domain')
+                                else f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})"
+                            )
+                        ),
+                        inline=False
+                    )
+                    
                     await self.traceroute_channel.send(embed=embed)
 
         except Exception as e:
