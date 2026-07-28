@@ -1855,14 +1855,13 @@ class MqttBridge(commands.Cog):
         if settings["graphs_domain"]:
             embed.add_field(name="Graphs Domain", value=settings["graphs_domain"])
         
-        
         await ctx.send(embed=embed)
 
     # Node management commands
     @app_commands.command(name="node")
     @app_commands.describe(
         action="Action to perform",
-        node_identifier="Node identifier (NodeNum or NodeID with ! prefix)",
+        node_identifier="Node identifier(s) (NodeNum or NodeID with ! prefix, comma/space separated)",
         user="User involved in the action (for list)"
     )
     @app_commands.choices(action=[
@@ -2076,7 +2075,7 @@ class MqttBridge(commands.Cog):
             await interation.followup.send(f"Error listing nodes: {str(e)}", ephemeral=True)
 
     async def node_id_lookup(self, interaction: discord.Interaction, node_identifier: str):
-        """Look up a node by its NodeNum (decimal) or NodeID (hex with ! prefix)"""
+        """Look up nodes by their NodeNum (decimal) or NodeID (hex with ! prefix)"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0) # Temporary until I can rework this and make it run under Context Manager
             conn.execute("PRAGMA busy_timeout = 30000")
@@ -2085,130 +2084,147 @@ class MqttBridge(commands.Cog):
 
             settings = await self.config.all()
             
-            found_node_data = None
+            # Split the input by commas and spaces
+            import re
+            identifiers = [i for i in re.split(r'[,\s]+', node_identifier) if i]
             
-            # Check if we're looking for a node ID (hex with ! prefix)
-            if node_identifier.startswith('!'):
-                hex_id = self.normalize_node_hex(node_identifier)
-                # Search through nodes to find matching nodeId
-                c.execute("""
-                    SELECT n.*, o.discord_id, o.discord_username, o.claimed_at 
-                    FROM nodes n 
-                    LEFT JOIN node_owners o ON n.node_id = o.node_id 
-                    WHERE n.node_id_hex = ?
-                """, (hex_id,))
-                node_row = c.fetchone()
-            else:
-                # Assume it's a node number (decimal)
-                try:
-                    node_num = int(node_identifier)
+            if not identifiers:
+                await interaction.followup.send("Please provide at least one node identifier.", ephemeral=True)
+                conn.close()
+                return
+
+            if len(identifiers) > 10:
+                await interaction.followup.send("You can only look up a maximum of 10 nodes at a time.", ephemeral=True)
+                conn.close()
+                return
+            
+            embeds_to_send = []
+            not_found = []
+            
+            for identifier in identifiers:
+                found_node_data = None
+                
+                # Check if we're looking for a node ID (hex with ! prefix)
+                if identifier.startswith('!'):
+                    hex_id = self.normalize_node_hex(identifier)
+                    # Search through nodes to find matching nodeId
                     c.execute("""
                         SELECT n.*, o.discord_id, o.discord_username, o.claimed_at 
                         FROM nodes n 
                         LEFT JOIN node_owners o ON n.node_id = o.node_id 
-                        WHERE n.node_num = ?
-                    """, (node_num,))
+                        WHERE n.node_id_hex = ?
+                    """, (hex_id,))
                     node_row = c.fetchone()
-                except ValueError:
-                    await interaction.followup.send(f"Invalid node identifier: {node_identifier}. Use a decimal node number or hex ID with ! prefix.", ephemeral=True)
+                else:
+                    # Assume it's a node number (decimal)
+                    try:
+                        node_num = int(identifier)
+                        c.execute("""
+                            SELECT n.*, o.discord_id, o.discord_username, o.claimed_at 
+                            FROM nodes n 
+                            LEFT JOIN node_owners o ON n.node_id = o.node_id 
+                            WHERE n.node_num = ?
+                        """, (node_num,))
+                        node_row = c.fetchone()
+                    except ValueError:
+                        not_found.append(f"{identifier} (Invalid format)")
+                        continue
+                
+                if node_row:
+                    # Create a structured representation of the node data
+                    found_node_data = {
+                        "node_id": node_row[0],
+                        "node_num": node_row[1],
+                        "node_id_hex": node_row[2],
+                        "short_name": node_row[3],
+                        "long_name": node_row[4],
+                        "hw_model": node_row[5],
+                        "role": node_row[6],
+                        "last_seen": node_row[8]  # Position 8 accounting for public_key at position 7
+                    }
+                    
+                    # Add owner information if present
+                    owner_discord_id = node_row[10]  # From the JOIN with node_owners
+                    if owner_discord_id:
+                        found_node_data["owner"] = {
+                            "discord_id": owner_discord_id,
+                            "discord_username": node_row[11],
+                            "claimed_at": node_row[12]
+                        }
+                    
+                    # Get latest telemetry
+                    c.execute("""
+                        SELECT battery_level, voltage, temperature, humidity, pressure, timestamp, uptime_seconds
+                        FROM node_telemetry 
+                        WHERE node_id = ? 
+                        ORDER BY timestamp DESC LIMIT 1
+                    """, (found_node_data["node_id"],))
+                    telemetry = c.fetchone()
+                    
+                    if telemetry:
+                        found_node_data["telemetry"] = {
+                            "battery_level": telemetry[0],
+                            "voltage": telemetry[1],
+                            "temperature": telemetry[2],
+                            "humidity": telemetry[3],
+                            "pressure": telemetry[4],
+                            "timestamp": telemetry[5],
+                            "uptime_seconds": telemetry[6]
+                        }
+    
+                    # Get latest position
+                    c.execute("""
+                        SELECT latitude, longitude, altitude, timestamp, city
+                        FROM node_positions
+                        WHERE node_id = ?
+                    """, (found_node_data["node_id"],))
+                    position = c.fetchone()
+    
+                    if position:
+                        found_node_data["position"] = {
+                            "latitude": position[0],
+                            "longitude": position[1],
+                            "altitude": position[2],
+                            "timestamp": position[3],
+                            "city": position[4]
+                        }
+                    
                     conn.close()
-                    return
-            
-            if node_row:
-                # Create a structured representation of the node data
-                found_node_data = {
-                    "node_id": node_row[0],
-                    "node_num": node_row[1],
-                    "node_id_hex": node_row[2],
-                    "short_name": node_row[3],
-                    "long_name": node_row[4],
-                    "hw_model": node_row[5],
-                    "role": node_row[6],
-                    "last_seen": node_row[8]  # Position 8 accounting for public_key at position 7
-                }
-                
-                # Add owner information if present
-                owner_discord_id = node_row[10]  # From the JOIN with node_owners
-                if owner_discord_id:
-                    found_node_data["owner"] = {
-                        "discord_id": owner_discord_id,
-                        "discord_username": node_row[11],
-                        "claimed_at": node_row[12]
-                    }
-                
-                # Get latest telemetry
-                c.execute("""
-                    SELECT battery_level, voltage, temperature, humidity, pressure, timestamp, uptime_seconds
-                    FROM node_telemetry 
-                    WHERE node_id = ? 
-                    ORDER BY timestamp DESC LIMIT 1
-                """, (found_node_data["node_id"],))
-                telemetry = c.fetchone()
-                
-                if telemetry:
-                    found_node_data["telemetry"] = {
-                        "battery_level": telemetry[0],
-                        "voltage": telemetry[1],
-                        "temperature": telemetry[2],
-                        "humidity": telemetry[3],
-                        "pressure": telemetry[4],
-                        "timestamp": telemetry[5],
-                        "uptime_seconds": telemetry[6]
-                    }
-
-                # Get latest position
-                c.execute("""
-                    SELECT latitude, longitude, altitude, timestamp, city
-                    FROM node_positions
-                    WHERE node_id = ?
-                """, (found_node_data["node_id"],))
-                position = c.fetchone()
-
-                if position:
-                    found_node_data["position"] = {
-                        "latitude": position[0],
-                        "longitude": position[1],
-                        "altitude": position[2],
-                        "timestamp": position[3],
-                        "city": position[4]
-                    }
-                
-                conn.close()
-                
-                # Create an embed with the node information
-                embed = discord.Embed(
-                    title=f"Node Information for:\n{found_node_data.get('long_name', 'Unknown')} ({found_node_data.get('node_id_hex', 'Unknown')})",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.now()
-                )
-
-                if "owner" in found_node_data and found_node_data["owner"]:
-                    embed.add_field(
-                        name="Owner", 
-                        value=f"<@{found_node_data['owner']['discord_id']}>", 
-                        inline=False
+                    
+                    # Create an embed with the node information
+                    embed = discord.Embed(
+                        title=f"Node Information for:\n{found_node_data.get('long_name', 'Unknown')} ({found_node_data.get('node_id_hex', 'Unknown')})",
+                        color=discord.Color.blue(),
+                        timestamp=datetime.now()
                     )
-                
-                # Basic node information
-                embed.add_field(name="Node Number", value=found_node_data.get("node_num", "Unknown"), inline=True)
-                embed.add_field(name="Node ID", value=found_node_data.get("node_id_hex", "Unknown"), inline=True)
-                embed.add_field(name="Short Name", value=found_node_data.get("short_name", "Unknown"), inline=True)
-                
-                # Add hardware and role info if available
-                if found_node_data.get("hw_model"):
-                    embed.add_field(name="Hardware", value=found_node_data["hw_model"], inline=True)
-                if found_node_data.get("role"):
-                    embed.add_field(name="Role", value=found_node_data["role"], inline=True)
-                
-                # Add last seen
-                if found_node_data.get("last_seen"):
-                    last_seen_str = self.format_time_ago(found_node_data["last_seen"])
-                    embed.add_field(name="Last Seen", value=last_seen_str, inline=True)
-                
-                # Add telemetry data if available
-                if "telemetry" in found_node_data:
-                    telemetry = found_node_data["telemetry"]
-                    telemetry_text = ""
+    
+                    if "owner" in found_node_data and found_node_data["owner"]:
+                        embed.add_field(
+                            name="Owner", 
+                            value=f"<@{found_node_data['owner']['discord_id']}>", 
+                            inline=False
+                        )
+                    
+                    # Basic node information
+                    embed.add_field(name="Node Number", value=found_node_data.get("node_num", "Unknown"), inline=True)
+                    embed.add_field(name="Node ID", value=found_node_data.get("node_id_hex", "Unknown"), inline=True)
+                    embed.add_field(name="Short Name", value=found_node_data.get("short_name", "Unknown"), inline=True)
+                    
+                    # Add hardware and role info if available
+                    if found_node_data.get("hw_model"):
+                        embed.add_field(name="Hardware", value=found_node_data["hw_model"], inline=True)
+                    if found_node_data.get("role"):
+                        embed.add_field(name="Role", value=found_node_data["role"], inline=True)
+                    
+                    # Add last seen
+                    if found_node_data.get("last_seen"):
+                        last_seen_str = self.format_time_ago(found_node_data["last_seen"])
+                        embed.add_field(name="Last Seen", value=last_seen_str, inline=True)
+                    
+                    # Add telemetry data if available
+                    if "telemetry" in found_node_data:
+                        telemetry = found_node_data["telemetry"]
+                        telemetry_text = ""
                     
                     if telemetry.get("battery_level") is not None:
                         telemetry_text += f"Battery: {telemetry['battery_level']}%\n"
@@ -2251,17 +2267,32 @@ class MqttBridge(commands.Cog):
                 embed.add_field(
                     name="Links", 
                     value=(
-                        f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_num})\n"
-                        f"[View on Map]({settings['map_domain']}/?node_id={node_num})\n"
-                        f"[View Metrics]({settings['metrics_domain']}/d/edqo1uh0eglq8g/node-dashboard?orgId=1&var-nodeID={node_num})"
+                        f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_num})\n" if settings.get('meshview_domain') else ""
+                    ) + (
+                        f"[View on Map]({settings['map_domain']}/?node_id={node_num})\n" if settings.get('map_domain') else ""
+                    ) + (
+                        f"[View Metrics]({settings['metrics_domain']}/d/edqo1uh0eglq8g/node-dashboard?orgId=1&var-nodeID={node_num})" if settings.get('metrics_domain') else ""
                     ), 
                     inline=False
                 )
                 
-                await interaction.followup.send(embed=embed, ephemeral=False)
+                embeds_to_send.append(embed)
             else:
-                await interaction.followup.send(f"Node not found: {node_identifier}", ephemeral=True)
-                conn.close()
+                not_found.append(identifier)
+            
+            conn.close()
+
+            if embeds_to_send:
+                # Discord allows a maximum of 10 embeds per message
+                for i in range(0, len(embeds_to_send), 10):
+                    batch = embeds_to_send[i:i+10]
+                    content = None
+                    # If this is the last batch and we had some errors, include them in the message text
+                    if i + 10 >= len(embeds_to_send) and not_found:
+                        content = f"Could not find or invalid identifiers: {', '.join(not_found)}"
+                    await interaction.followup.send(content=content, embeds=batch, ephemeral=False)
+            elif not_found:
+                await interaction.followup.send(f"No nodes found. Could not resolve: {', '.join(not_found)}", ephemeral=True)
                 
         except Exception as e:
             await interaction.followup.send(f"Error looking up node: {str(e)}", ephemeral=True)
