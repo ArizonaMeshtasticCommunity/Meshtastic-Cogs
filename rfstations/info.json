@@ -1,0 +1,14 @@
+{
+    "author": ["Skordy"],
+    "name": "RF Stations",
+    "short": "Members create RF map stations and mint one broker login per Pi.",
+    "description": "Self-service logins for the community RF map. A member claims a location (one station on the map) and mints a broker login for each Pi or decoder there. Credentials are sent once by direct message. Owners can list, rotate and revoke their logins, and rename or hand over a location. Talks to the community rf-registrar service, which holds the broker's admin key, so the bot never does.",
+    "install_msg": "Set the registrar key with `[p]set api rfregistrar api_key,<key>`, then configure with `[p]rfset`.",
+    "requirements": [],
+    "end_user_data_statement": "This cog stores no personal data itself. When a member creates an RF station location or a station login, it sends their Discord user ID and display name to the community's RF registrar, which records them as the location's owner and in its change log. The display name is shown on the community RF map. Station passwords are sent to the member by direct message once and are never stored.",
+    "hidden": false,
+    "disabled": false,
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "tags": ["meshtastic", "rf", "mqtt", "utility"]
+}
