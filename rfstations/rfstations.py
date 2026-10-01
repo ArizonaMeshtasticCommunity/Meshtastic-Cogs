@@ -14,7 +14,9 @@ again at once.
 """
 
 import logging
+import re
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -26,6 +28,33 @@ log = logging.getLogger("red.meshtastic.rfstations")
 SERVICE = "rfstations"
 TOKEN_SERVICE = "rfregistrar"
 TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+
+# The registrar's own rules. Checked here too, so a member gets a plain
+# answer and their text never shapes the request.
+LOCATION_ID = re.compile(r"^[a-z0-9-]{3,32}$")
+SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,15}$")
+
+
+def seg(text: str) -> str:
+    """One URL path segment. A member's text can never add a path or a query."""
+    return quote(text, safe="")
+
+
+def loc(text: str) -> str:
+    ident = text.strip().lower()
+    if not LOCATION_ID.match(ident):
+        raise RegistrarError("A location id is 3 to 32 of a-z, 0-9 and -, such as `tempe-roof`.")
+    return seg(ident)
+
+
+def src(text: str) -> str:
+    ident = text.strip().lower()
+    if not SOURCE_ID.match(ident):
+        raise RegistrarError(
+            "A source name is 1 to 16 of a-z, 0-9 and -, not starting with -, such as `adsb-pi`."
+        )
+    return seg(ident)
 
 
 class RegistrarError(Exception):
@@ -238,7 +267,7 @@ class RFStations(commands.Cog):
         if actor is None:
             return
         try:
-            row = await self.call("GET", f"locations/{location}")
+            row = await self.call("GET", f"locations/{loc(location)}")
         except RegistrarError as exc:
             await self.reply(ctx, str(exc))
             return
@@ -257,7 +286,7 @@ class RFStations(commands.Cog):
             return
         try:
             row = await self.call(
-                "POST", f"locations/{location}/rename", {"display_name": display_name, "actor": actor}
+                "POST", f"locations/{loc(location)}/rename", {"display_name": display_name, "actor": actor}
             )
         except RegistrarError as exc:
             await self.reply(ctx, str(exc))
@@ -277,7 +306,7 @@ class RFStations(commands.Cog):
         try:
             row = await self.call(
                 "POST",
-                f"locations/{location}/transfer",
+                f"locations/{loc(location)}/transfer",
                 {"owner_id": str(member.id), "owner_name": member.display_name, "actor": actor},
             )
         except RegistrarError as exc:
@@ -303,7 +332,7 @@ class RFStations(commands.Cog):
             )
             return
         try:
-            await self.call("POST", f"locations/{location}/delete", {"actor": actor})
+            await self.call("POST", f"locations/{loc(location)}/delete", {"actor": actor})
         except RegistrarError as exc:
             await self.reply(ctx, str(exc))
             return
@@ -328,7 +357,7 @@ class RFStations(commands.Cog):
             return
         try:
             creds = await self.call(
-                "POST", f"locations/{location}/sources", {"source": source, "actor": actor}
+                "POST", f"locations/{loc(location)}/sources", {"source": source, "actor": actor}
             )
         except RegistrarError as exc:
             await self.reply(ctx, str(exc))
@@ -339,7 +368,7 @@ class RFStations(commands.Cog):
             try:
                 await self.call(
                     "POST",
-                    f"locations/{creds['station']}/sources/{creds['source']}/revoke",
+                    f"locations/{seg(creds['station'])}/sources/{seg(creds['source'])}/revoke",
                     {"actor": actor},
                 )
             except RegistrarError:
@@ -366,7 +395,7 @@ class RFStations(commands.Cog):
             return
         try:
             creds = await self.call(
-                "POST", f"locations/{location}/sources/{source}/rotate", {"actor": actor}
+                "POST", f"locations/{loc(location)}/sources/{src(source)}/rotate", {"actor": actor}
             )
         except RegistrarError as exc:
             await self.reply(ctx, str(exc))
@@ -388,7 +417,7 @@ class RFStations(commands.Cog):
         if actor is None:
             return
         try:
-            await self.call("POST", f"locations/{location}/sources/{source}/revoke", {"actor": actor})
+            await self.call("POST", f"locations/{loc(location)}/sources/{src(source)}/revoke", {"actor": actor})
         except RegistrarError as exc:
             await self.reply(ctx, str(exc))
             return
