@@ -35,6 +35,7 @@ class MqttBridge(commands.Cog):
             "messages_channel_id": None,
             "traceroute_channel_id": None,
             "nodediscovery_channel_id": None,
+            "sonoran_domain": None,
             "meshview_domain": None,
             "map_domain": None,
             "metrics_domain": None,
@@ -592,7 +593,13 @@ class MqttBridge(commands.Cog):
                         value=f"{gateway_info.get('long_name', 'Unknown')} ({gateway_info.get('node_id_hex', 'Unknown')})" if gateway_info else via, 
                         inline=True
                     )
-                embed.add_field(name="Links", value=f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_id})", inline=False)
+                links = []
+                if settings.get("sonoran_domain"):
+                    links.append(f"[View on Sonoran]({settings['sonoran_domain']}/#node/!{node_id_hex})")
+                if settings.get("meshview_domain"):
+                    links.append(f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_id})")
+                if links:
+                    embed.add_field(name="Links", value="\n".join(links), inline=False)
 
                 note = f"Is `{node_info.long_name} (!{node_id_hex})` your node? Click `Claim This Node` below to claim!"
                 view = NodeClaimView(f"!{node_id_hex}", self)
@@ -748,7 +755,13 @@ class MqttBridge(commands.Cog):
                     value=f"{gateway_info.get('long_name', 'Unknown')} ({gateway_info.get('node_id_hex', 'Unknown')})" if gateway_info else via, 
                     inline=True
                 )
-            embed.add_field(name="Links", value=f"[View on MeshView]({settings['meshview_domain']}/packet/{mp.id})", inline=False)
+            links = []
+            if settings.get("sonoran_domain"):
+                links.append(f"[View on Sonoran]({settings['sonoran_domain']}/#packet/!{sender_id}/{mp.id})")
+            if settings.get("meshview_domain"):
+                links.append(f"[View on MeshView]({settings['meshview_domain']}/packet/{mp.id})")
+            if links:
+                embed.add_field(name="Links", value="\n".join(links), inline=False)
                 
             # Send to Discord
             if self.messages_channel:
@@ -813,7 +826,12 @@ class MqttBridge(commands.Cog):
                     node_name = node_row[0]
 
             settings = await self.config.all()
-            user_link = f"[{node_name}]({settings['meshview_domain']}/packet/{mp.id})"
+            if settings.get("sonoran_domain"):
+                user_link = f"[{node_name}]({settings['sonoran_domain']}/#packet/!{sender_id}/{mp.id})"
+            elif settings.get("meshview_domain"):
+                user_link = f"[{node_name}]({settings['meshview_domain']}/packet/{mp.id})"
+            else:
+                user_link = node_name
 
             # Find existing Reactions field
             reactions_idx = -1
@@ -1205,20 +1223,23 @@ class MqttBridge(commands.Cog):
                 else:
                     embed.add_field(name="\u200b", value="\u200b", inline=True)
 
-                embed.add_field(
-                    name="Links",
-                    value=(
-                        f"[View Packet on MeshView]({settings['meshview_domain']}/packet/{mp.id})\n"
-                        + ( "View graphs: "
-                            f"[Full Graph]({settings['graphs_domain']}/graph/trace/{mp.id}) | "
-                            f"[Outbound]({settings['graphs_domain']}/graph/trace/{mp.id}?direction=out) | "
-                            f"[Reply]({settings['graphs_domain']}/graph/trace/{mp.id}?direction=in)"
-                            if settings.get('graphs_domain')
-                            else f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})"
-                        )
-                    ),
-                    inline=False
-                )
+                links = []
+                sender_hex = sender_info.get("node_id_hex", "").lstrip("!") or format(sender_int, '08x')
+                if settings.get("sonoran_domain"):
+                    links.append(f"[View on Sonoran]({settings['sonoran_domain']}/#packet/!{sender_hex}/{mp.id})")
+                if settings.get("meshview_domain"):
+                    links.append(f"[View Packet on MeshView]({settings['meshview_domain']}/packet/{mp.id})")
+                if settings.get("graphs_domain"):
+                    links.append(
+                        "View graphs: "
+                        f"[Full Graph]({settings['graphs_domain']}/graph/trace/{mp.id}) | "
+                        f"[Outbound]({settings['graphs_domain']}/graph/trace/{mp.id}?direction=out) | "
+                        f"[Reply]({settings['graphs_domain']}/graph/trace/{mp.id}?direction=in)"
+                    )
+                elif settings.get("meshview_domain"):
+                    links.append(f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})")
+                if links:
+                    embed.add_field(name="Links", value="\n".join(links), inline=False)
 
                 if self.traceroute_channel:
                     if "owner" in sender_info and sender_info['owner'] and sender_info['owner']['notifications']:
@@ -1340,28 +1361,48 @@ class MqttBridge(commands.Cog):
                 # If we couldn't find/edit the message, post a new one
                 if not discord_msg_id and self.traceroute_channel:
                     settings = await self.config.all()
+
+                    orig_sender_hex = None
+                    with self.get_db() as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT from_id FROM traceroute WHERE trace_id = ?", (original_trace_id,))
+                        orig_row = c.fetchone()
+                        if orig_row and orig_row[0]:
+                            orig_sender_hex = format(int(orig_row[0]), '08x')
+
+                    if settings.get("sonoran_domain") and orig_sender_hex:
+                        trace_desc = f"Response to trace ID [{original_trace_id}]({settings['sonoran_domain']}/#packet/!{orig_sender_hex}/{original_trace_id})"
+                    elif settings.get("meshview_domain"):
+                        trace_desc = f"Response to trace ID [{original_trace_id}]({settings['meshview_domain']}/packet/{original_trace_id})"
+                    else:
+                        trace_desc = f"Response to trace ID {original_trace_id}"
+
                     embed = discord.Embed(
-                        title=f"Traceroute Reply Received",
-                        description=f"Response to trace ID [{original_trace_id}]({settings['meshview_domain']}/packet/{original_trace_id})",
+                        title="Traceroute Reply Received",
+                        description=trace_desc,
                         color=discord.Color.purple(),
                         timestamp=datetime.now()
                     )
                     embed.add_field(name="Route Taken", value=route_display, inline=False)
                     
-                    embed.add_field(
-                        name="Links",
-                        value=(
-                            f"[View Packet on MeshView]({settings['meshview_domain']}/packet/{mp.id})\n"
-                            + ( "View graphs: "
-                                f"[Full Graph]({settings['graphs_domain']}/graph/trace/{original_trace_id}) | "
-                                f"[Outbound]({settings['graphs_domain']}/graph/trace/{original_trace_id}?direction=out) | "
-                                f"[Reply]({settings['graphs_domain']}/graph/trace/{original_trace_id}?direction=in)"
-                                if settings.get('graphs_domain')
-                                else f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})"
-                            )
-                        ),
-                        inline=False
-                    )
+                    links = []
+                    reply_sender_int = getattr(mp, "from") if hasattr(mp, "from") else 0
+                    reply_sender_hex = format(reply_sender_int, '08x')
+                    if settings.get("sonoran_domain"):
+                        links.append(f"[View on Sonoran]({settings['sonoran_domain']}/#packet/!{reply_sender_hex}/{mp.id})")
+                    if settings.get("meshview_domain"):
+                        links.append(f"[View Packet on MeshView]({settings['meshview_domain']}/packet/{mp.id})")
+                    if settings.get("graphs_domain"):
+                        links.append(
+                            "View graphs: "
+                            f"[Full Graph]({settings['graphs_domain']}/graph/trace/{original_trace_id}) | "
+                            f"[Outbound]({settings['graphs_domain']}/graph/trace/{original_trace_id}?direction=out) | "
+                            f"[Reply]({settings['graphs_domain']}/graph/trace/{original_trace_id}?direction=in)"
+                        )
+                    elif settings.get("meshview_domain"):
+                        links.append(f"[View Graph on MeshView]({settings['meshview_domain']}/graph/traceroute/{mp.id})")
+                    if links:
+                        embed.add_field(name="Links", value="\n".join(links), inline=False)
                     
                     await self.traceroute_channel.send(embed=embed)
 
@@ -1789,29 +1830,60 @@ class MqttBridge(commands.Cog):
         else:
             await ctx.send("Node discovery channel cleared.")
 
+    @mqtt.command(name="sonorandomain")
+    async def set_sonoran_domain(self, ctx: commands.Context, domain: str):
+        """Set the Sonoran domain for links, or 'null' to clear"""
+        if domain.lower() == "null":
+            await self.config.sonoran_domain.set(None)
+            await ctx.send("Sonoran domain cleared.")
+        else:
+            clean_domain = domain.rstrip('/')
+            await self.config.sonoran_domain.set(clean_domain)
+            await ctx.send(f"Links will use Sonoran domain: {clean_domain}")
+
     @mqtt.command(name="meshviewdomain")
     async def set_meshview_domain(self, ctx: commands.Context, domain: str):
-        """Set the meshview domain for links"""
-        await self.config.meshview_domain.set(domain)
-        await ctx.send(f"Links will use meshview domain: {domain}")
+        """Set the meshview domain for links, or 'null' to clear"""
+        if domain.lower() == "null":
+            await self.config.meshview_domain.set(None)
+            await ctx.send("Meshview domain cleared.")
+        else:
+            clean_domain = domain.rstrip('/')
+            await self.config.meshview_domain.set(clean_domain)
+            await ctx.send(f"Links will use meshview domain: {clean_domain}")
 
     @mqtt.command(name="mapdomain")
     async def set_map_domain(self, ctx: commands.Context, domain: str):
-        """Set the map domain for links"""
-        await self.config.map_domain.set(domain)
-        await ctx.send(f"Links will use map domain: {domain}")
+        """Set the map domain for links, or 'null' to clear"""
+        if domain.lower() == "null":
+            await self.config.map_domain.set(None)
+            await ctx.send("Map domain cleared.")
+        else:
+            clean_domain = domain.rstrip('/')
+            await self.config.map_domain.set(clean_domain)
+            await ctx.send(f"Links will use map domain: {clean_domain}")
 
     @mqtt.command(name="metricsdomain")
     async def set_metrics_domain(self, ctx: commands.Context, domain: str):
-        """Set the metrics domain for links"""
-        await self.config.metrics_domain.set(domain)
-        await ctx.send(f"Links will use metrics domain: {domain}")
+        """Set the metrics domain for links, or 'null' to clear"""
+        if domain.lower() == "null":
+            await self.config.metrics_domain.set(None)
+            await ctx.send("Metrics domain cleared.")
+        else:
+            clean_domain = domain.rstrip('/')
+            await self.config.metrics_domain.set(clean_domain)
+            await ctx.send(f"Links will use metrics domain: {clean_domain}")
 
     @mqtt.command(name="graphsdomain")
     async def set_graphs_domain(self, ctx: commands.Context, domain: str):
-        """Set the graphs domain for traceroute links"""
-        await self.config.graphs_domain.set(domain)
-        await ctx.send(f"Graphs links will use domain: {domain}")
+        """Set the graphs domain for traceroute links, or 'null' to clear"""
+        if domain.lower() == "null":
+            await self.config.graphs_domain.set(None)
+            await ctx.send("Graphs domain cleared.")
+        else:
+            clean_domain = domain.rstrip('/')
+            await self.config.graphs_domain.set(clean_domain)
+            await ctx.send(f"Graphs links will use domain: {clean_domain}")
 
     @mqtt.command(name="enable")
     async def enable_bridge(self, ctx: commands.Context):
@@ -1859,16 +1931,19 @@ class MqttBridge(commands.Cog):
             channel_mention = channel.mention if channel else "Channel not found"
             embed.add_field(name="Node Discovery Channel", value=channel_mention)
 
-        if settings["meshview_domain"]:
+        if settings.get("sonoran_domain"):
+            embed.add_field(name="Sonoran Domain", value=settings["sonoran_domain"])
+
+        if settings.get("meshview_domain"):
             embed.add_field(name="Meshview Domain", value=settings["meshview_domain"])
 
-        if settings["map_domain"]:
+        if settings.get("map_domain"):
             embed.add_field(name="Map Domain", value=settings["map_domain"])
 
-        if settings["metrics_domain"]:
+        if settings.get("metrics_domain"):
             embed.add_field(name="Metrics Domain", value=settings["metrics_domain"])
 
-        if settings["graphs_domain"]:
+        if settings.get("graphs_domain"):
             embed.add_field(name="Graphs Domain", value=settings["graphs_domain"])
         
         
@@ -2262,17 +2337,23 @@ class MqttBridge(commands.Cog):
                     if position_text:
                         embed.add_field(name="Position", value=position_text, inline=False)
                 
-                # Add MeshView link
+                # Add Links
+                links = []
+                node_hex = found_node_data.get('node_id_hex', '')
+                formatted_hex = node_hex if node_hex.startswith('!') else f"!{node_hex}"
                 node_num = found_node_data.get('node_num', '')
-                embed.add_field(
-                    name="Links", 
-                    value=(
-                        f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_num})\n"
-                        f"[View on Map]({settings['map_domain']}/?node_id={node_num})\n"
-                        f"[View Metrics]({settings['metrics_domain']}/d/edqo1uh0eglq8g/node-dashboard?orgId=1&var-nodeID={node_num})"
-                    ), 
-                    inline=False
-                )
+
+                if settings.get("sonoran_domain") and formatted_hex != "!Unknown":
+                    links.append(f"[View on Sonoran]({settings['sonoran_domain']}/#node/{formatted_hex})")
+                if settings.get("meshview_domain") and node_num:
+                    links.append(f"[View on MeshView]({settings['meshview_domain']}/packet_list/{node_num})")
+                if settings.get("map_domain") and node_num:
+                    links.append(f"[View on Map]({settings['map_domain']}/?node_id={node_num})")
+                if settings.get("metrics_domain") and node_num:
+                    links.append(f"[View Metrics]({settings['metrics_domain']}/d/edqo1uh0eglq8g/node-dashboard?orgId=1&var-nodeID={node_num})")
+
+                if links:
+                    embed.add_field(name="Links", value="\n".join(links), inline=False)
                 
                 await interaction.followup.send(embed=embed, ephemeral=False)
             else:

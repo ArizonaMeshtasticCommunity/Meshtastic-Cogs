@@ -32,7 +32,7 @@ The MqttBridge cog connects your Discord server to a Meshtastic MQTT broker, ena
   - Message content
   - Channel information
   - Gateway details (which node relayed the message)
-  - Direct links to MeshView for packet details
+  - Direct links to Sonoran and MeshView for packet details
 - **Duplicate Prevention**: Intelligent filtering to prevent duplicate messages
 - **Owner Notifications**: Mentions node owners when their devices send messages (if enabled)
 
@@ -52,7 +52,7 @@ The MqttBridge cog connects your Discord server to a Meshtastic MQTT broker, ena
   - Route participants
   - SNR (Signal-to-Noise Ratio) data
   - Network topology insights
-- **MeshView Integration**: Direct links to visualize routes on MeshView
+- **Sonoran & MeshView Integration**: Direct links to view packets and routes on Sonoran and MeshView
 - **Graphs Service Integration**: Multiple graph views for route analysis (full, outbound, reply)
 
 ### Node Ownership System
@@ -84,10 +84,11 @@ The MqttBridge cog connects your Discord server to a Meshtastic MQTT broker, ena
 - **`!mqtt status`**: View current configuration and status
 
 #### Domain Configuration
-- **`!mqtt meshviewdomain <domain>`**: Set MeshView instance URL for packet links
-- **`!mqtt mapdomain <domain>`**: Set map service URL for location links
-- **`!mqtt metricsdomain <domain>`**: Set metrics dashboard URL
-- **`!mqtt graphsdomain <domain>`**: Set graphs service URL for traceroute visualizations
+- **`!mqtt sonorandomain <domain>`**: Set Sonoran dashboard URL for node and packet links (or `null` to clear)
+- **`!mqtt meshviewdomain <domain>`**: Set MeshView instance URL for packet links (or `null` to clear)
+- **`!mqtt mapdomain <domain>`**: Set map service URL for location links (or `null` to clear)
+- **`!mqtt metricsdomain <domain>`**: Set metrics dashboard URL (or `null` to clear)
+- **`!mqtt graphsdomain <domain>`**: Set graphs service URL for traceroute visualizations (or `null` to clear)
 
 #### Node Administration (`!nodeadmin` commands)
 - **`!nodeadmin unclaim <node_id>`**: Remove ownership from a node
@@ -137,6 +138,6 @@ The MqttBridge cog connects your Discord server to a Meshtastic MQTT broker, ena
 - **Network Analytics**: Track node activity and network health
 - **User Engagement**: Gamify mesh networking with node ownership
 - **Troubleshooting**: Use traceroute data to diagnose network issues
-- **External Tools**: Seamless integration with MeshView, maps, and metrics
+- **External Tools**: Seamless integration with Sonoran, MeshView, maps, and metrics
 
 The MqttBridge cog transforms Discord into a comprehensive dashboard for your Meshtastic network, fostering community engagement while providing powerful monitoring and management capabilities.
