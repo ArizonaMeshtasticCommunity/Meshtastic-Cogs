@@ -31,7 +31,7 @@ jobs:
         run: pip install paho-mqtt>=2.0 meshtastic cryptography aiohttp
 
       - name: Syntax check (compile all cogs)
-        run: python -m compileall -q mqttbridge strikes
+        run: python -m compileall -q mqttbridge strikes sonoran
 
       - name: Lint with flake8
         run: |
@@ -39,9 +39,15 @@ jobs:
           # E9   — syntax / indentation errors (always fatal)
           # F821 — undefined name (would crash at runtime)
           # F811 — redefinition of an unused import / name
-          flake8 mqttbridge strikes --count --select=E9,F821,F811 --show-source --statistics
+          flake8 mqttbridge strikes sonoran tests --count --select=E9,F821,F811 --show-source --statistics
 
       - name: Verify cog imports
         run: |
           python -c "import mqttbridge; print('mqttbridge: OK')"
           python -c "import strikes;    print('strikes:    OK')"
+          python -c "import sonoran;    print('sonoran:    OK')"
+
+      - name: Run tests
+        run: |
+          pip install pytest pytest-asyncio
+          pytest
