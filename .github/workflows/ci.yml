@@ -16,32 +16,44 @@ jobs:
         python-version: ["3.11"]
 
     steps:
-      - uses: actions/checkout@v4
+      # Actions must be pinned to a commit, and only allowed ones may run
+      # (the repository's Actions settings). setup-python is not allowed;
+      # setup-uv installs the Python and activates a virtual environment.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           python-version: ${{ matrix.python-version }}
+          activate-environment: true
 
       - name: Install Red-DiscordBot
         run: |
-          pip install --upgrade pip
-          pip install "Red-DiscordBot"
+          # Red imports pip, which a uv environment does not include.
+          uv pip install pip "Red-DiscordBot"
 
       - name: Install mqttbridge requirements
-        run: pip install paho-mqtt>=2.0 meshtastic cryptography aiohttp
+        run: uv pip install "paho-mqtt>=2.0" meshtastic cryptography aiohttp
 
       - name: Syntax check (compile all cogs)
-        run: python -m compileall -q mqttbridge strikes
+        run: python -m compileall -q mqttbridge strikes sonoran
 
       - name: Lint with flake8
         run: |
-          pip install flake8
+          uv pip install flake8
           # E9   — syntax / indentation errors (always fatal)
           # F821 — undefined name (would crash at runtime)
           # F811 — redefinition of an unused import / name
-          flake8 mqttbridge strikes --count --select=E9,F821,F811 --show-source --statistics
+          flake8 mqttbridge strikes sonoran tests --count --select=E9,F821,F811 --show-source --statistics
 
       - name: Verify cog imports
         run: |
           python -c "import mqttbridge; print('mqttbridge: OK')"
           python -c "import strikes;    print('strikes:    OK')"
+          python -c "import sonoran;    print('sonoran:    OK')"
+
+      - name: Run tests
+        run: |
+          uv pip install pytest pytest-asyncio
+          pytest
